@@ -151,8 +151,9 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
                          cached_scores=None, old_chat_scores=None, per_chat=None,
                          old_gw_sum=0, old_gw_total=0, bundle_size=1, bundle_mode='count', compute_global=True):
     """
-    Update with new chat_history dict (incremental merge and recalc for affected chats).
-    - Decays old aggregates, adds new contributions.
+    Update with new chat_history dict (incremental merge and full recalc for affected chats to avoid bug).
+    - Merges new into existing.
+    - Recomputes entire affected chat (O(n_messages_per_chat)) for correctness in bundling modes.
     - weighted_sum: Sum of (score * weight) for qualifying items.
     - weight_sum: Sum of weights for qualifying items.
     """
@@ -163,34 +164,38 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
     
     lambda_ = math.log(2) / half_life_days
     
-    # Merge new_chat_history into existing chat_history
+    # Merge new_chat_history into chat_history
     for contact, new_msgs in new_chat_history.items():
         if contact not in chat_history:
             chat_history[contact] = []
         chat_history[contact].extend(new_msgs)
         chat_history[contact] = sorted(chat_history[contact], key=lambda m: m["timestamp"])  # Re-sort after append
     
-    # For each affected contact (those in new_chat_history), update incrementally
+    # For each affected contact, recompute the entire chat to avoid double-counting bug
     for contact in new_chat_history:
         old_chat_weighted_sum, old_chat_weight_sum, last_update = per_chat.get(contact, (0, 0, current_time))
         
-        # Decay old aggregates based on time passed (applies to entire chat's prior sums)
+        # Decay old aggregates (but since full recompute, this is temporary; full calc replaces)
         delta_days = (current_time - last_update).total_seconds() / 86400
-        decay = math.exp(-lambda_ * delta_days)  # Multiplicative decay factor (reduces influence of old data)
-        new_chat_weighted_sum = old_chat_weighted_sum * decay
-        new_chat_weight_sum = old_chat_weight_sum * decay
+        decay = math.exp(-lambda_ * delta_days)
+        temp_chat_weighted_sum = old_chat_weighted_sum * decay
+        temp_chat_weight_sum = old_chat_weight_sum * decay
         
+        # Full recompute for the chat (loop over all bundles/messages)
         messages = chat_history[contact]
-        new_msgs_for_contact = new_chat_history[contact]  # Only process new for efficiency
+        new_chat_weighted_sum = 0
+        new_chat_weight_sum = 0
         
         if bundle_mode == 'daily':
-            # Update affected days (re-score bundles with new msgs)
-            affected_days = set(msg['timestamp'].date() for msg in new_msgs_for_contact)
-            for day in affected_days:
-                days_chunk = [msg for msg in messages if msg['timestamp'].date() == day]
-                bundle_text = "\n".join(msg['text'] for msg in days_chunk)
+            daily_groups = defaultdict(list)
+            for msg in messages:
+                day_key = msg['timestamp'].date()
+                daily_groups[day_key].append(msg)
+            
+            for day, chunk in sorted(daily_groups.items()):
+                bundle_text = "\n".join(msg['text'] for msg in chunk)
                 bundle_key = hashlib.sha256(bundle_text.encode()).hexdigest()
-                avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in days_chunk) / len(days_chunk)
+                avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in chunk) / len(chunk)
                 avg_timestamp = datetime.fromtimestamp(avg_timestamp)
                 age_days = (current_time - avg_timestamp).total_seconds() / 86400
                 weight = math.exp(-lambda_ * age_days)
@@ -203,28 +208,26 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
                     new_chat_weighted_sum += score * weight
                     new_chat_weight_sum += weight
         elif bundle_mode == 'count' and bundle_size > 1:
-            # Re-bundle last affected chunk with new
-            last_bundle_start = max(0, len(messages) - bundle_size)
-            chunk = messages[last_bundle_start:]
-            bundle_text = "\n".join(msg['text'] for msg in chunk)
-            bundle_key = hashlib.sha256(bundle_text.encode()).hexdigest()
-            avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in chunk) / len(chunk)
-            avg_timestamp = datetime.fromtimestamp(avg_timestamp)
-            age_days = (current_time - avg_timestamp).total_seconds() / 86400
-            weight = math.exp(-lambda_ * age_days)
-            
-            if bundle_key not in cached_scores[contact]:
-                cached_scores[contact][bundle_key] = score_message_with_llm(bundle_text, topic)
-            score = cached_scores[contact][bundle_key]
-            
-            if score >= MIN_SCORE_THRESHOLD:
-                new_chat_weighted_sum += score * weight
-                new_chat_weight_sum += weight
+            for i in range(0, len(messages), bundle_size):
+                chunk = messages[i:i + bundle_size]
+                bundle_text = "\n".join(msg['text'] for msg in chunk)
+                bundle_key = hashlib.sha256(bundle_text.encode()).hexdigest()
+                avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in chunk) / len(chunk)
+                avg_timestamp = datetime.fromtimestamp(avg_timestamp)
+                age_days = (current_time - avg_timestamp).total_seconds() / 86400
+                weight = math.exp(-lambda_ * age_days)
+                
+                if bundle_key not in cached_scores[contact]:
+                    cached_scores[contact][bundle_key] = score_message_with_llm(bundle_text, topic)
+                score = cached_scores[contact][bundle_key]
+                
+                if score >= MIN_SCORE_THRESHOLD:
+                    new_chat_weighted_sum += score * weight
+                    new_chat_weight_sum += weight
         else:
-            # Per-message for new ones
-            for new_msg_dict in new_msgs_for_contact:
-                msg = new_msg_dict['text']
-                timestamp = new_msg_dict['timestamp']
+            for msg_dict in messages:
+                msg = msg_dict['text']
+                timestamp = msg_dict['timestamp']
                 age_days = (current_time - timestamp).total_seconds() / 86400
                 weight = math.exp(-lambda_ * age_days)
                 
@@ -337,7 +340,7 @@ def daily_update_pipeline(new_raw_messages, chat_history, old_chat_scores, old_g
     updated_chat_scores, _, chat_history, cached_scores, new_gw_sum, new_gw_total, per_chat = update_with_new_chat(
         new_chat_history, chat_history, topic=topic, half_life_days=half_life_days, current_time=current_time,
         cached_scores=cached_scores, old_chat_scores=old_chat_scores, per_chat=per_chat,
-        old_gw_sum=old_gw_sum, old_gw_total=old_gw_total, bundle_size=bundle_size, bundle_mode=bundle_mode
+        old_gw_sum=old_gw_sum, old_gw_total=old_gw_total, bundle_size=bundle_size, bundle_mode=bundle_mode, compute_global=compute_global
     )
     updated_user_scores, updated_composite = compute_user_composites(updated_chat_scores, per_chat, compute_global=compute_global)
     save_caches(cached_scores, per_chat)
@@ -354,10 +357,10 @@ historical_raw_messages = [
 ]
 
 chat_history, chat_scores, composite, user_scores, cached_scores, per_chat, gw_sum, gw_total = initialize_pipeline(
-    historical_raw_messages, topic="Formula 1", half_life_days=7, bundle_mode='daily', compute_global=False  # Optional global off
+    historical_raw_messages, topic="Formula 1", half_life_days=7, bundle_mode='daily', compute_global=True
 )
 print("Initial Chat Scores:", chat_scores)
-print("Initial Composite (optional):", composite)  # None if compute_global=False
+print("Initial Composite (optional):", composite)
 print("Initial User Scores:", user_scores)
 
 # Example: Daily update with new messages
@@ -368,7 +371,7 @@ new_raw_messages = [
 
 updated_chat_scores, updated_composite, updated_user_scores, cached_scores, per_chat, new_gw_sum, new_gw_total = daily_update_pipeline(
     new_raw_messages, chat_history, old_chat_scores=chat_scores, old_gw_sum=gw_sum, old_gw_total=gw_total,
-    topic="Formula 1", half_life_days=7, bundle_mode='daily', compute_global=False
+    topic="Formula 1", half_life_days=7, bundle_mode='daily', compute_global=True
 )
 print("Updated Chat Scores:", updated_chat_scores)
 print("Updated Composite (optional):", updated_composite)
