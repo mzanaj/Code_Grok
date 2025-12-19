@@ -1389,3 +1389,39 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# Hey! Solid follow-up on ONNX for production—it's a great choice for fast, portable inference across runtimes like ONNX Runtime (ORT), TensorRT, or even mobile/edge setups. To fit this seamlessly into your current script (e.g., after the trainer.save_model(final_model_path) line in train_model), add the following section. It'll export the trained DeBERTa to ONNX, then apply dynamic INT8 quantization (via Optimum + ORT) for ~2-4x speedup with minimal accuracy drop (~1-2% typically). For FP16, it uses graph optimization with mixed precision (GPU-only, for ~1.5-2x speedup).
+# First, add these imports at the top of the script:
+# Pythonfrom optimum.onnxruntime import ORTModelForSequenceClassification, ORTQuantizer, ORTOptimizer
+# from optimum.onnxruntime.configuration import AutoQuantizationConfig, AutoOptimizationConfig
+# Then, insert this right after trainer.save_model(final_model_path) and tokenizer.save_pretrained(final_model_path):
+# Python
+# =============================================================================
+# 8. ONNX EXPORT, QUANTIZATION, AND OPTIMIZATION
+# =============================================================================
+print("\n" + "=" * 80)
+print("EXPORTING TO ONNX AND OPTIMIZING FOR PRODUCTION")
+print("=" * 80)
+
+# Export to ONNX
+onnx_path = Path(config.output_dir) / "onnx_model"
+ort_model = ORTModelForSequenceClassification.from_pretrained(final_model_path, export=True)
+ort_model.save_pretrained(onnx_path)
+print(f"✓ ONNX model exported to {onnx_path}")
+
+# Dynamic INT8 Quantization (CPU/GPU compatible, reduces model size ~4x)
+quantizer = ORTQuantizer.from_pretrained(ort_model)
+dqconfig = AutoQuantizationConfig.avx512_vnni(is_static=False, per_channel=False)  # Adjust for your hardware (e.g., avx512 or arm64)
+quantized_path = Path(config.output_dir) / "quantized_int8_model"
+quantizer.quantize(save_dir=quantized_path, quantization_config=dqconfig)
+print(f"✓ INT8 quantized model saved to {quantized_path}")
+
+# FP16 Optimization (GPU-only, for mixed precision inference)
+optimizer = ORTOptimizer.from_pretrained(ort_model)
+optimization_config = AutoOptimizationConfig.O4()  # Highest level: includes FP16, GELU approx, etc.
+fp16_path = Path(config.output_dir) / "optimized_fp16_model"
+optimizer.optimize(save_dir=fp16_path, optimization_config=optimization_config)
+print(f"✓ FP16 optimized model saved to {fp16_path}")
+# For production inference, update your TextClassifier to load the ONNX/quantized version (e.g., via ORTModelForSequenceClassification.from_pretrained(quantized_path) instead of AutoModelForSequenceClassification). Run it with ONNX Runtime sessions for low-latency preds—e.g., in a FastAPI endpoint or AWS Lambda. Test accuracy on your test set post-quantization to confirm the drop is acceptable.
+# You'll need to install: pip install optimum[onnxruntime] onnxruntime. If you hit hardware-specific issues (e.g., no AVX512), swap the config to avx2 or test on your GPU env. What hardware are you targeting for prod? Any specific runtime (e.g., ORT on CPU vs. GPU)?
