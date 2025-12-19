@@ -1,4 +1,195 @@
 # ============================================================================
+# SETUP INSTRUCTIONS FOR DEBERTA TRAINING PIPELINE
+# ============================================================================
+
+# 1. Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# 2. Install dependencies
+pip install --upgrade pip
+
+# Core libraries
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118  # CUDA 11.8
+# For CUDA 12.1, use: https://download.pytorch.org/whl/cu121
+
+pip install transformers==4.36.2
+pip install datasets==2.16.1
+pip install accelerate==0.25.0
+pip install scikit-learn==1.4.0
+pip install pandas==2.2.0
+pip install numpy==1.26.3
+
+# Experiment tracking (choose one or both)
+pip install wandb==0.16.2  # Weights & Biases
+pip install tensorboard==2.15.1  # TensorBoard
+
+# Hyperparameter optimization
+pip install optuna==3.5.0
+
+# Data quality
+pip install ydata-profiling==4.6.4  # For EDA
+pip install cleanlab==2.6.0  # For label error detection
+
+# Text augmentation (optional)
+pip install nlpaug==1.1.11
+pip install textaugment==1.3.4
+
+# Save requirements
+pip freeze > requirements.txt
+
+# ============================================================================
+# 3. PREPARE YOUR DATA
+# ============================================================================
+
+# Your data should be in one of these formats:
+
+# CSV format (recommended):
+# text,label
+# "Your text here...",0
+# "Another text...",1
+
+# JSON format:
+# [
+#   {"text": "Your text here...", "label": 0},
+#   {"text": "Another text...", "label": 1}
+# ]
+
+# JSONL format:
+# {"text": "Your text here...", "label": 0}
+# {"text": "Another text...", "label": 1}
+
+# Place your data file at: data/labeled_data.csv
+
+# ============================================================================
+# 4. INITIALIZE WEIGHTS & BIASES (if using)
+# ============================================================================
+
+# Login to wandb
+wandb login
+
+# Or set API key as environment variable
+# export WANDB_API_KEY=your_api_key_here
+
+# To disable wandb, set report_to="none" in config
+
+# ============================================================================
+# 5. PROJECT STRUCTURE
+# ============================================================================
+
+# Create necessary directories
+mkdir -p data/raw
+mkdir -p data/processed
+mkdir -p results
+mkdir -p models
+mkdir -p logs
+mkdir -p notebooks
+
+# Expected structure:
+# project/
+# ├── data/
+# │   ├── raw/
+# │   │   └── labeled_data.csv
+# │   └── processed/
+# ├── results/           # Training outputs, checkpoints
+# ├── models/            # Final models
+# ├── logs/              # Training logs
+# ├── train.py           # Main training script (from artifact)
+# ├── requirements.txt
+# └── README.md
+
+# ============================================================================
+# 6. RUN TRAINING
+# ============================================================================
+
+# Basic training run
+python train.py
+
+# With custom config (modify train.py Config class)
+# Or pass arguments via command line (requires argparse integration)
+
+# Monitor training:
+# - Check wandb dashboard: https://wandb.ai/
+# - Or TensorBoard: tensorboard --logdir=./results
+
+# ============================================================================
+# 7. GPU SETUP VERIFICATION
+# ============================================================================
+
+# Check CUDA availability
+python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}'); print(f'Device count: {torch.cuda.device_count()}')"
+
+# Check GPU memory
+nvidia-smi
+
+# For multi-GPU training, use:
+# accelerate config  # Configure distributed training
+# accelerate launch train.py  # Run with accelerate
+
+# ============================================================================
+# 8. HYPERPARAMETER SEARCH
+# ============================================================================
+
+# To run hyperparameter optimization with Optuna:
+# Uncomment the hyperparameter_search() call at the bottom of train.py
+
+# Or create a separate script:
+# python hyperparameter_search.py
+
+# ============================================================================
+# 9. TROUBLESHOOTING
+# ============================================================================
+
+# Out of memory errors:
+# - Reduce batch_size (try 16 or 8)
+# - Enable gradient_checkpointing=True
+# - Reduce max_length (try 128 or 192)
+# - Use gradient_accumulation_steps=2
+
+# Slow training:
+# - Use fp16=True (or bf16=True on A100)
+# - Increase batch_size if memory allows
+# - Use dataloader_num_workers=4 or higher
+
+# Poor performance:
+# - Increase num_epochs (try 6-8)
+# - Try different learning rates (1e-5 to 5e-5)
+# - Check for label errors with cleanlab
+# - Ensure data is properly cleaned
+
+# ============================================================================
+# 10. PRODUCTION DEPLOYMENT (FUTURE)
+# ============================================================================
+
+# After getting best model, optimize for inference:
+
+# Quantization (dynamic)
+# python -m torch.quantization.quantize_dynamic model.py model_quantized.py
+
+# ONNX export
+# python -m transformers.onnx --model=./models/final_model onnx/
+
+# Or use Optimum:
+# pip install optimum[onnxruntime]
+# optimum-cli export onnx --model ./models/final_model onnx/
+
+# ============================================================================
+# QUICK START CHECKLIST
+# ============================================================================
+
+# ✓ 1. Create virtual environment
+# ✓ 2. Install dependencies (pip install -r requirements.txt)
+# ✓ 3. Prepare data (CSV with text,label columns)
+# ✓ 4. Update Config in train.py (data_path, text_column, label_column)
+# ✓ 5. Setup wandb (wandb login) or set report_to="none"
+# ✓ 6. Verify GPU (python -c "import torch; print(torch.cuda.is_available())")
+# ✓ 7. Run training (python train.py)
+# ✓ 8. Monitor results (wandb dashboard or tensorboard)
+# ✓ 9. Evaluate on test set (automatically done)
+# ✓ 10. Save best model for deployment
+
+
+# ============================================================================
 # DeBERTa Text Classification - Complete Training Pipeline
 # ============================================================================
 
