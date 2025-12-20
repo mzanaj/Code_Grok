@@ -384,3 +384,214 @@ print("Updated Chat Scores:", updated_chat_scores)
 print("Updated Composite (optional):", updated_composite)
 print("Updated User Scores:", updated_user_scores)
 ```
+# Viz
+
+import matplotlib.pyplot as plt
+import pandas as pd
+
+def visualize_top_chats(chat_scores, top_n=10, output_file='top_chats.png'):
+    """Bar chart of highest-scoring chat pairs"""
+    # Sort by score descending
+    sorted_chats = sorted(chat_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    
+    # Format labels (tuple to "Alice-Bob")
+    labels = [f"{pair[0]}-{pair[1]}" if isinstance(pair, tuple) else str(pair) 
+              for pair, _ in sorted_chats]
+    scores = [score for _, score in sorted_chats]
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    bars = ax.barh(labels, scores, color='skyblue')
+    
+    # Color-code by score intensity
+    colors = plt.cm.RdYlGn([s/10 for s in scores])
+    for bar, color in zip(bars, colors):
+        bar.set_color(color)
+    
+    ax.set_xlabel('Relevance Score (1-10)')
+    ax.set_title(f'Top {top_n} Chat Pairs by Topic Relevance')
+    ax.set_xlim(0, 10)
+    ax.invert_yaxis()  # Highest on top
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300)
+    print(f"Saved to {output_file}")
+def visualize_user_scores(user_scores, top_n=15, output_file='user_scores.png'):
+    """Bar chart of user composite scores"""
+    sorted_users = sorted(user_scores.items(), key=lambda x: x[1], reverse=True)[:top_n]
+    users = [user for user, _ in sorted_users]
+    scores = [score for _, score in sorted_users]
+    
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars = ax.bar(users, scores)
+    
+    # Gradient coloring
+    colors = plt.cm.viridis([s/10 for s in scores])
+    for bar, color in zip(bars, colors):
+        bar.set_color(color)
+    
+    ax.set_ylabel('User Composite Score (1-10)')
+    ax.set_title('Users Ranked by Topic Engagement')
+    ax.set_ylim(0, 10)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300)
+    print(f"Saved to {output_file}")
+
+def visualize_temporal_trends(history_log, output_file='trends_over_time.png'):
+    """
+    Line chart showing composite/user scores over time.
+    history_log: list of dicts like [{'date': datetime, 'composite': 7.5, 'user_avg': 6.2}, ...]
+    """
+    df = pd.DataFrame(history_log)
+    
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(df['date'], df['composite'], marker='o', label='Global Composite', linewidth=2)
+    ax.plot(df['date'], df['user_avg'], marker='s', label='User Average', linewidth=2, alpha=0.7)
+    
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Score (1-10)')
+    ax.set_title('Topic Relevance Trends Over Time')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300)
+    print(f"Saved to {output_file}")
+
+import networkx as nx
+
+def visualize_chat_network(chat_scores, threshold=3, output_file='chat_network.png'):
+    """Network graph where nodes=users, edges=chats, thickness=score"""
+    G = nx.Graph()
+    
+    for contact, score in chat_scores.items():
+        if isinstance(contact, tuple) and score >= threshold:
+            user1, user2 = contact
+            G.add_edge(user1, user2, weight=score)
+    
+    pos = nx.spring_layout(G, k=0.5, iterations=50)
+    
+    fig, ax = plt.subplots(figsize=(14, 10))
+    
+    # Draw edges with width proportional to score
+    edges = G.edges()
+    weights = [G[u][v]['weight'] for u, v in edges]
+    nx.draw_networkx_edges(G, pos, width=[w*0.5 for w in weights], 
+                           alpha=0.6, edge_color=weights, 
+                           edge_cmap=plt.cm.RdYlGn, edge_vmin=0, edge_vmax=10)
+    
+    # Draw nodes
+    nx.draw_networkx_nodes(G, pos, node_size=500, node_color='lightblue', 
+                           edgecolors='black', linewidths=2)
+    nx.draw_networkx_labels(G, pos, font_size=10, font_weight='bold')
+    
+    ax.set_title('Chat Network by Topic Relevance')
+    ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300)
+    print(f"Saved to {output_file}")
+import numpy as np
+import seaborn as sns
+
+def visualize_chat_heatmap(chat_scores, output_file='chat_heatmap.png'):
+    """Heatmap showing chat scores between all user pairs"""
+    # Extract unique users
+    users = set()
+    for contact in chat_scores.keys():
+        if isinstance(contact, tuple):
+            users.update(contact)
+    users = sorted(list(users))
+    
+    # Build matrix
+    n = len(users)
+    matrix = np.zeros((n, n))
+    user_idx = {user: i for i, user in enumerate(users)}
+    
+    for contact, score in chat_scores.items():
+        if isinstance(contact, tuple):
+            i, j = user_idx[contact[0]], user_idx[contact[1]]
+            matrix[i][j] = score
+            matrix[j][i] = score  # Symmetric
+    
+    fig, ax = plt.subplots(figsize=(12, 10))
+    sns.heatmap(matrix, xticklabels=users, yticklabels=users, 
+                annot=True, fmt='.1f', cmap='RdYlGn', vmin=0, vmax=10,
+                cbar_kws={'label': 'Relevance Score'}, ax=ax)
+    ax.set_title('Chat Relevance Heatmap')
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300)
+    print(f"Saved to {output_file}")
+def visualize_message_timeline(chat_history, cached_scores, topic="Formula 1", 
+                                threshold=3, output_file='message_timeline.png'):
+    """Scatter plot of relevant messages over time"""
+    timestamps = []
+    scores_list = []
+    
+    for contact, messages in chat_history.items():
+        for msg in messages:
+            msg_key = hashlib.sha256(msg['text'].encode()).hexdigest()
+            if msg_key in cached_scores.get(contact, {}):
+                score = cached_scores[contact][msg_key]
+                if score >= threshold:
+                    timestamps.append(msg['timestamp'])
+                    scores_list.append(score)
+    
+    fig, ax = plt.subplots(figsize=(14, 6))
+    scatter = ax.scatter(timestamps, scores_list, c=scores_list, 
+                         cmap='RdYlGn', s=100, alpha=0.6, 
+                         edgecolors='black', linewidth=0.5)
+    
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Message Relevance Score')
+    ax.set_title(f'Timeline of {topic}-Related Messages')
+    ax.set_ylim(0, 10)
+    plt.colorbar(scatter, label='Score')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300)
+    print(f"Saved to {output_file}")
+import plotly.graph_objects as go
+
+def visualize_conversation_flow(chat_history, cached_scores, threshold=5):
+    """Sankey diagram of message flows (requires plotly)"""
+    sources, targets, values, colors = [], [], [], []
+    user_set = set()
+    
+    for contact, messages in chat_history.items():
+        if not isinstance(contact, tuple):
+            continue
+        user1, user2 = contact
+        user_set.update([user1, user2])
+        
+        # Count relevant messages
+        count = sum(1 for msg in messages 
+                   if hashlib.sha256(msg['text'].encode()).hexdigest() 
+                   in cached_scores.get(contact, {})
+                   and cached_scores[contact][hashlib.sha256(msg['text'].encode()).hexdigest()] >= threshold)
+        
+        if count > 0:
+            user_idx = {user: i for i, user in enumerate(sorted(user_set))}
+            sources.append(user_idx[user1])
+            targets.append(user_idx[user2])
+            values.append(count)
+    
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(label=sorted(user_set)),
+        link=dict(source=sources, target=targets, value=values)
+    )])
+    
+    fig.update_layout(title="Message Flow (Relevant Conversations)")
+    fig.write_html("conversation_flow.html")
+    print("Saved to conversation_flow.html")
+
+# After running your pipeline:
+visualize_top_chats(chat_scores, top_n=15)
+visualize_user_scores(user_scores, top_n=20)
+visualize_chat_network(chat_scores, threshold=4)
+visualize_chat_heatmap(chat_scores)
+visualize_message_timeline(chat_history, cached_scores)
+
+# For trends, you'd need to log data daily:
+# history_log.append({'date': datetime.now(), 
+#                     'composite': composite, 
+#                     'user_avg': np.mean(list(user_scores.values()))})
+# visualize_temporal_trends(history_log)
