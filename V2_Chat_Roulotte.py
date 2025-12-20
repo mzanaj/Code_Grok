@@ -1,9 +1,11 @@
+```python
 import openai
 from collections import defaultdict
 import json
 import hashlib
 from datetime import datetime
 import math
+import ast  # For secure literal evaluation in loading
 
 # Set your API key (or load from env)
 openai.api_key = "your-api-key-here"
@@ -14,9 +16,10 @@ On a scale of 1 to 10, rate how closely this message bundle relates to the topic
 Message bundle: {message}
 """
 
-MIN_SCORE_THRESHOLD = 3  # Minimum score to include in aggregations (filters low-relevance noise)
+MIN_SCORE_THRESHOLD = 3  # Minimum score to include in aggregations (filters low-relevance noise to strengthen signals)
 
 def score_message_with_llm(message, topic="Formula 1"):
+    # Generates a prompt for the LLM to score the message/bundle's relevance to the topic
     prompt = SCORE_PROMPT.format(topic=topic, message=message)
     response = openai.ChatCompletion.create(
         model="gpt-4-turbo",
@@ -26,21 +29,22 @@ def score_message_with_llm(message, topic="Formula 1"):
     )
     try:
         score = int(response.choices[0].message.content.strip())
-        return max(1, min(10, score))
+        return max(1, min(10, score))  # Clamp score to 1-10 range
     except ValueError:
-        return 5  # Fallback neutral score if parsing fails
+        return 5  # Fallback neutral score if parsing fails (e.g., non-integer response)
 
 def group_messages_by_pair(raw_messages):
     """
     Group raw messages into chat_history using sorted tuple keys for bidirectional consistency.
+    This normalizes conversations so A->B and B->A share the same key (e.g., ('A', 'B')).
     """
     chat_history = defaultdict(list)
     for msg in raw_messages:
-        key = tuple(sorted([msg["sender"], msg["receiver"]]))  # Sort to normalize direction (e.g., ('a', 'b') always)
+        key = tuple(sorted([msg["sender"], msg["receiver"]]))  # Sort to normalize direction
         chat_history[key].append({"text": msg["text"], "timestamp": msg["timestamp"]})
     
     for key in chat_history:
-        chat_history[key] = sorted(chat_history[key], key=lambda m: m["timestamp"])  # Ensure chronological order
+        chat_history[key] = sorted(chat_history[key], key=lambda m: m["timestamp"])  # Ensure chronological order for bundling/weighting
     
     return dict(chat_history)
 
@@ -48,12 +52,13 @@ def process_chat_history(chat_history, topic="Formula 1", half_life_days=7, curr
                          cached_scores=None, bundle_size=1, bundle_mode='count', compute_global=True):
     """
     Process the full chat history to compute per-chat scores and optional global composite.
-    - weighted_sum: Sum of (score * weight) for qualifying items (after threshold).
-    - weight_sum: Sum of weights for qualifying items.
+    - weighted_sum: Sum of (score * weight) for qualifying items (after threshold) - measures total topical "strength" adjusted for recency.
+    - weight_sum: Sum of weights for qualifying items - acts as a normalizer for the weighted average, ensuring recency bias is properly scaled.
+    These fit into the methodology by allowing efficient incremental updates (stored in per_chat) and user/global aggregations.
     """
     if current_time is None:
         current_time = datetime.now()
-    lambda_ = math.log(2) / half_life_days  # Decay rate for exponential weighting (halves every half_life_days)
+    lambda_ = math.log(2) / half_life_days  # Decay rate formula: Measures how quickly relevance fades (e.g., halves influence every half_life_days); fits as the core of recency bias.
     
     if cached_scores is None:
         cached_scores = defaultdict(dict)
@@ -69,35 +74,35 @@ def process_chat_history(chat_history, topic="Formula 1", half_life_days=7, curr
         if contact not in cached_scores:
             cached_scores[contact] = {}
         
-        chat_weighted_sum = 0  # Per-chat weighted_sum: sum(score * weight) for qualifying bundles/messages
-        chat_weight_sum = 0    # Per-chat weight_sum: sum(weight) for qualifying bundles/messages
+        chat_weighted_sum = 0  # Per-chat weighted_sum initialization
+        chat_weight_sum = 0    # Per-chat weight_sum initialization
         
         if bundle_mode == 'daily':
-            # Group messages by calendar day for bundling
+            # Group messages by calendar day for bundling (contextual daily relevance)
             daily_groups = defaultdict(list)
             for msg in messages:
                 day_key = msg['timestamp'].date()
                 daily_groups[day_key].append(msg)
             
             for day, chunk in sorted(daily_groups.items()):
-                bundle_text = "\n".join(msg['text'] for msg in chunk)  # Concatenate daily messages
-                bundle_key = hashlib.sha256(bundle_text.encode()).hexdigest()  # Hash for caching
-                # Average timestamp for the day (to compute age/weight)
+                bundle_text = "\n".join(msg['text'] for msg in chunk)  # Concatenate for LLM input
+                bundle_key = hashlib.sha256(bundle_text.encode()).hexdigest()  # Cache key
+                # Average timestamp calculation for bundle age
                 avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in chunk) / len(chunk)
                 avg_timestamp = datetime.fromtimestamp(avg_timestamp)
-                age_days = (current_time - avg_timestamp).total_seconds() / 86400  # Fractional days old
-                weight = math.exp(-lambda_ * age_days)  # Exponential decay weight (recent = higher)
+                age_days = (current_time - avg_timestamp).total_seconds() / 86400  # Age in fractional days
+                weight = math.exp(-lambda_ * age_days)  # Weight formula: Measures recency importance (1 for today, decays exponentially); fits to prioritize "the moment".
                 
                 if bundle_key not in cached_scores[contact]:
                     cached_scores[contact][bundle_key] = score_message_with_llm(bundle_text, topic)
                 score = cached_scores[contact][bundle_key]
                 
-                if score >= MIN_SCORE_THRESHOLD:  # Filter: Only include if relevant enough
-                    chat_weighted_sum += score * weight  # Add to per-chat weighted_sum
-                    chat_weight_sum += weight            # Add to per-chat weight_sum
+                if score >= MIN_SCORE_THRESHOLD:
+                    chat_weighted_sum += score * weight  # Accumulate weighted relevance
+                    chat_weight_sum += weight            # Accumulate normalizer
         
         elif bundle_mode == 'count' and bundle_size > 1:
-            # Fixed-size bundling (chunks of bundle_size messages)
+            # Fixed-size bundling for contextual groups
             for i in range(0, len(messages), bundle_size):
                 chunk = messages[i:i + bundle_size]
                 bundle_text = "\n".join(msg['text'] for msg in chunk)
@@ -105,7 +110,7 @@ def process_chat_history(chat_history, topic="Formula 1", half_life_days=7, curr
                 avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in chunk) / len(chunk)
                 avg_timestamp = datetime.fromtimestamp(avg_timestamp)
                 age_days = (current_time - avg_timestamp).total_seconds() / 86400
-                weight = math.exp(-lambda_ * age_days)
+                weight = math.exp(-lambda_ * age_days)  # Same weight formula as above
                 
                 if bundle_key not in cached_scores[contact]:
                     cached_scores[contact][bundle_key] = score_message_with_llm(bundle_text, topic)
@@ -116,12 +121,12 @@ def process_chat_history(chat_history, topic="Formula 1", half_life_days=7, curr
                     chat_weight_sum += weight
         
         else:
-            # Per-message mode (no bundling)
+            # Per-message mode (granular, no context bundling)
             for msg_dict in messages:
                 msg = msg_dict['text']
                 timestamp = msg_dict['timestamp']
                 age_days = (current_time - timestamp).total_seconds() / 86400
-                weight = math.exp(-lambda_ * age_days)
+                weight = math.exp(-lambda_ * age_days)  # Weight formula: Ensures recent messages dominate scores; measures temporal relevance decay.
                 
                 msg_key = hashlib.sha256(msg.encode()).hexdigest()
                 if msg_key not in cached_scores[contact]:
@@ -134,26 +139,26 @@ def process_chat_history(chat_history, topic="Formula 1", half_life_days=7, curr
         
         # Compute per-chat score if qualifying content exists
         if chat_weight_sum > 0:
-            chat_scores[contact] = round(chat_weighted_sum / chat_weight_sum, 1)  # Weighted average (1-10 scale)
+            chat_scores[contact] = round(chat_weighted_sum / chat_weight_sum, 1)  # Weighted average formula: Measures overall chat relevance (1-10), biased to recent/qualifying content.
             if compute_global:
-                global_weighted_sum += chat_weighted_sum  # Add to global for composite
-                global_weight_sum += chat_weight_sum     # Add to global for composite
+                global_weighted_sum += chat_weighted_sum  # Add to global for network-wide average
+                global_weight_sum += chat_weight_sum     # Add to global normalizer
             per_chat[contact] = (chat_weighted_sum, chat_weight_sum, current_time)
         else:
             chat_scores[contact] = 0
             per_chat[contact] = (0, 0, current_time)
     
     # Optional global composite: Weighted average across all chats
-    composite_score = round(global_weighted_sum / global_weight_sum, 1) if global_weight_sum > 0 and compute_global else None
+    composite_score = round(global_weighted_sum / global_weight_sum, 1) if global_weight_sum > 0 and compute_global else None  # Global average formula: Measures network-wide topic alignment; fits as optional holistic metric.
     return chat_scores, composite_score, cached_scores, global_weighted_sum, global_weight_sum, per_chat
 
 def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half_life_days=7, current_time=None,
                          cached_scores=None, old_chat_scores=None, per_chat=None,
-                         old_gw_sum=0, old_gw_total=0, bundle_size=1, bundle_mode='count', compute_global=True):
+                         bundle_size=1, bundle_mode='count', compute_global=True):
     """
-    Update with new chat_history dict (incremental merge and full recalc for affected chats to avoid bug).
+    Update with new chat_history dict (incremental merge and recalc for affected chats).
     - Merges new into existing.
-    - Recomputes entire affected chat (O(n_messages_per_chat)) for correctness in bundling modes.
+    - Recomputes entire affected chat for correctness in bundling modes (avoids double-counting).
     - weighted_sum: Sum of (score * weight) for qualifying items.
     - weight_sum: Sum of weights for qualifying items.
     """
@@ -162,7 +167,7 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
     if cached_scores is None or per_chat is None:
         raise ValueError("Provide caches and per_chat")
     
-    lambda_ = math.log(2) / half_life_days
+    lambda_ = math.log(2) / half_life_days  # Decay rate formula (same as in process)
     
     # Merge new_chat_history into chat_history
     for contact, new_msgs in new_chat_history.items():
@@ -171,21 +176,13 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
         chat_history[contact].extend(new_msgs)
         chat_history[contact] = sorted(chat_history[contact], key=lambda m: m["timestamp"])  # Re-sort after append
     
-    # For each affected contact, recompute the entire chat to avoid double-counting bug
+    # For each affected contact, recompute the entire chat to ensure correctness
     for contact in new_chat_history:
-        old_chat_weighted_sum, old_chat_weight_sum, last_update = per_chat.get(contact, (0, 0, current_time))
-        
-        # Decay old aggregates (but since full recompute, this is temporary; full calc replaces)
-        delta_days = (current_time - last_update).total_seconds() / 86400
-        decay = math.exp(-lambda_ * delta_days)
-        temp_chat_weighted_sum = old_chat_weighted_sum * decay
-        temp_chat_weight_sum = old_chat_weight_sum * decay
-        
-        # Full recompute for the chat (loop over all bundles/messages)
         messages = chat_history[contact]
-        new_chat_weighted_sum = 0
-        new_chat_weight_sum = 0
+        new_chat_weighted_sum = 0  # Reset per-chat weighted_sum
+        new_chat_weight_sum = 0    # Reset per-chat weight_sum
         
+        # Recompute bundles/messages (same logic as process, but per-chat)
         if bundle_mode == 'daily':
             daily_groups = defaultdict(list)
             for msg in messages:
@@ -198,7 +195,7 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
                 avg_timestamp = sum((msg['timestamp'] - datetime(1970,1,1)).total_seconds() for msg in chunk) / len(chunk)
                 avg_timestamp = datetime.fromtimestamp(avg_timestamp)
                 age_days = (current_time - avg_timestamp).total_seconds() / 86400
-                weight = math.exp(-lambda_ * age_days)
+                weight = math.exp(-lambda_ * age_days)  # Weight formula (recency measurement)
                 
                 if bundle_key not in cached_scores[contact]:
                     cached_scores[contact][bundle_key] = score_message_with_llm(bundle_text, topic)
@@ -244,19 +241,21 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
         new_chat_score = round(new_chat_weighted_sum / new_chat_weight_sum, 1) if new_chat_weight_sum > 0 else 0
         old_chat_scores[contact] = new_chat_score
         
-        # Update global aggregates (if compute_global=True)
-        if compute_global:
-            old_gw_sum -= old_chat_weighted_sum
-            old_gw_total -= old_chat_weight_sum
-            old_gw_sum += new_chat_weighted_sum
-            old_gw_total += new_chat_weight_sum
-            new_composite = round(old_gw_sum / old_gw_total, 1) if old_gw_total > 0 else 0
-        else:
-            new_composite = None
-        
         per_chat[contact] = (new_chat_weighted_sum, new_chat_weight_sum, current_time)
     
-    return old_chat_scores, new_composite, chat_history, cached_scores, old_gw_sum, old_gw_total, per_chat
+    # Recompute global from scratch (loop all per_chat with decay)
+    new_gw_sum = 0
+    new_gw_total = 0
+    new_composite = None
+    if compute_global:
+        for contact, (chat_weighted_sum, chat_weight_sum, last_update) in per_chat.items():
+            delta_days = (current_time - last_update).total_seconds() / 86400
+            decay = math.exp(-lambda_ * delta_days)  # Decay formula for this chat's aggregates
+            new_gw_sum += chat_weighted_sum * decay
+            new_gw_total += chat_weight_sum * decay
+        new_composite = round(new_gw_sum / new_gw_total, 1) if new_gw_total > 0 else 0
+    
+    return old_chat_scores, new_composite, chat_history, cached_scores, new_gw_sum, new_gw_total, per_chat
 
 def compute_user_composites(chat_scores, per_chat, compute_global=True):
     """
@@ -304,7 +303,10 @@ def load_caches():
             cached_scores = defaultdict(dict, json.load(f))
         with open("per_chat.json", "r") as f:
             serial_per_chat = json.load(f)
-            per_chat = {tuple(eval(k)) if k.startswith('(') else k: (v[0], v[1], datetime.fromisoformat(v[2])) for k, v in serial_per_chat.items()}
+            per_chat = {}
+            for k, v in serial_per_chat.items():
+                key = tuple(ast.literal_eval(k)) if k.startswith('(') else k  # Secure parsing of tuple keys
+                per_chat[key] = (v[0], v[1], datetime.fromisoformat(v[2]))
         return cached_scores, per_chat
     except FileNotFoundError:
         return defaultdict(dict), {}
@@ -327,7 +329,7 @@ def initialize_pipeline(historical_raw_messages, topic="Formula 1", half_life_da
     return chat_history, chat_scores, composite, user_scores, cached_scores, per_chat, gw_sum, gw_total
 
 # Daily run pipeline for new chats
-def daily_update_pipeline(new_raw_messages, chat_history, old_chat_scores, old_gw_sum, old_gw_total,
+def daily_update_pipeline(new_raw_messages, chat_history, old_chat_scores,
                           topic="Formula 1", half_life_days=7, bundle_size=1, bundle_mode='count', compute_global=True):
     """
     Daily update: Group new messages, update incrementally, compute new scores.
@@ -337,12 +339,12 @@ def daily_update_pipeline(new_raw_messages, chat_history, old_chat_scores, old_g
     new_chat_history = group_messages_by_pair(new_raw_messages)
     cached_scores, per_chat = load_caches()  # Reload if needed
     
-    updated_chat_scores, _, chat_history, cached_scores, new_gw_sum, new_gw_total, per_chat = update_with_new_chat(
+    updated_chat_scores, updated_composite, chat_history, cached_scores, new_gw_sum, new_gw_total, per_chat = update_with_new_chat(
         new_chat_history, chat_history, topic=topic, half_life_days=half_life_days, current_time=current_time,
         cached_scores=cached_scores, old_chat_scores=old_chat_scores, per_chat=per_chat,
-        old_gw_sum=old_gw_sum, old_gw_total=old_gw_total, bundle_size=bundle_size, bundle_mode=bundle_mode, compute_global=compute_global
+        bundle_size=bundle_size, bundle_mode=bundle_mode, compute_global=compute_global
     )
-    updated_user_scores, updated_composite = compute_user_composites(updated_chat_scores, per_chat, compute_global=compute_global)
+    updated_user_scores, _ = compute_user_composites(updated_chat_scores, per_chat, compute_global=False)  # Optional: Skip global if not needed
     save_caches(cached_scores, per_chat)
     return updated_chat_scores, updated_composite, updated_user_scores, cached_scores, per_chat, new_gw_sum, new_gw_total
 
@@ -370,53 +372,10 @@ new_raw_messages = [
 ]
 
 updated_chat_scores, updated_composite, updated_user_scores, cached_scores, per_chat, new_gw_sum, new_gw_total = daily_update_pipeline(
-    new_raw_messages, chat_history, old_chat_scores=chat_scores, old_gw_sum=gw_sum, old_gw_total=gw_total,
+    new_raw_messages, chat_history, old_chat_scores=chat_scores,
     topic="Formula 1", half_life_days=7, bundle_mode='daily', compute_global=True
 )
 print("Updated Chat Scores:", updated_chat_scores)
 print("Updated Composite (optional):", updated_composite)
 print("Updated User Scores:", updated_user_scores)
-
-
-# Visualizations
-import matplotlib.pyplot as plt
-import pandas as pd
-from datetime import datetime
-
-# Sample data from history (simulated for demo)
-user_scores = {'Alice': 9.0, 'Bob': 9.0, 'Charlie': 0.0}
-chat_scores = {('Alice', 'Bob'): 9.0, ('Alice', 'Charlie'): 0.0}
-per_chat = {('Alice', 'Bob'): (3.343, 0.371, datetime.now()), ('Alice', 'Charlie'): (0, 0, datetime.now())}
-
-# Function to visualize top users (bar chart)
-def visualize_top_users(user_scores, output_file='top_users.png'):
-    # Sort users descending by score
-    sorted_users = sorted(user_scores.items(), key=lambda x: x[1], reverse=True)
-    users, scores = zip(*sorted_users) if sorted_users else ([], [])
-    
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(users, scores, color='skyblue')
-    ax.set_ylim(0, 10)
-    ax.set_ylabel('User Composite Score (1-10)')
-    ax.set_title('Users with Highest Scores')
-    plt.savefig(output_file)
-    print(f"Saved top users chart to {output_file}")
-
-# Function for general trends (line chart of average scores over time)
-def visualize_general_trends(trend_data, output_file='general_trends.png'):
-    # trend_data: dict of {date: average_score}
-    # Simulated data
-    dates = pd.date_range(start='2025-12-15', periods=5).date
-    avg_scores = [4.5, 5.0, 5.5, 6.0, 5.7]  # From example
-    
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(dates, avg_scores, marker='o', color='blue')
-    ax.set_ylabel('Average User Score')
-    ax.set_title('General Trends Across Entire Chats')
-    ax.grid(True)
-    plt.savefig(output_file)
-    print(f"Saved general trends chart to {output_file}")
-
-# Call functions
-visualize_top_users(user_scores)
-visualize_general_trends(None)
+```
