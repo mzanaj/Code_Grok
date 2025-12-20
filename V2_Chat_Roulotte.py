@@ -9,6 +9,7 @@ import ast  # For secure literal evaluation in loading (safer than eval for pars
 
 # Set your API key (or load from env)
 openai.api_key = "your-api-key-here"
+client = openai.OpenAI()  # New syntax for OpenAI library v1+ (replaces deprecated ChatCompletion)
 
 # Prompt template for scoring a single message or bundle
 SCORE_PROMPT = """
@@ -21,7 +22,7 @@ MIN_SCORE_THRESHOLD = 3  # Minimum score to include in aggregations (filters low
 def score_message_with_llm(message, topic="Formula 1"):
     # Generates a prompt for the LLM to score the message/bundle's relevance to the topic
     prompt = SCORE_PROMPT.format(topic=topic, message=message)
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(  # Updated API call for v1+ compatibility
         model="gpt-4-turbo",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=5,
@@ -173,8 +174,12 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
     for contact, new_msgs in new_chat_history.items():
         if contact not in chat_history:
             chat_history[contact] = []
+        # Assume new_msgs sorted and newer; extend directly for O(k) efficiency
         chat_history[contact].extend(new_msgs)
-        chat_history[contact] = sorted(chat_history[contact], key=lambda m: m["timestamp"])  # Re-sort after append
+        # Optional check: Verify assumption (if fails, sort fully)
+        if chat_history[contact] and new_msgs and min(m['timestamp'] for m in new_msgs) < max(m['timestamp'] for m in chat_history[contact][:-len(new_msgs)]):
+            print(f"Warning: Out-of-order append in {contact} - falling back to full sort")
+            chat_history[contact] = sorted(chat_history[contact], key=lambda m: m["timestamp"])
     
     # For each affected contact, recompute the entire chat to ensure correctness
     for contact in new_chat_history:
