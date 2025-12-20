@@ -5,7 +5,7 @@ import json
 import hashlib
 from datetime import datetime
 import math
-import ast  # For secure literal evaluation in loading
+import ast  # For secure literal evaluation in loading (safer than eval for parsing tuple keys)
 
 # Set your API key (or load from env)
 openai.api_key = "your-api-key-here"
@@ -97,9 +97,9 @@ def process_chat_history(chat_history, topic="Formula 1", half_life_days=7, curr
                     cached_scores[contact][bundle_key] = score_message_with_llm(bundle_text, topic)
                 score = cached_scores[contact][bundle_key]
                 
-                if score >= MIN_SCORE_THRESHOLD:
-                    chat_weighted_sum += score * weight  # Accumulate weighted relevance
-                    chat_weight_sum += weight            # Accumulate normalizer
+                if score >= MIN_SCORE_THRESHOLD:  # Filter: Only include if relevant enough
+                    chat_weighted_sum += score * weight  # Add to per-chat weighted_sum
+                    chat_weight_sum += weight            # Add to per-chat weight_sum
         
         elif bundle_mode == 'count' and bundle_size > 1:
             # Fixed-size bundling for contextual groups
@@ -250,10 +250,10 @@ def update_with_new_chat(new_chat_history, chat_history, topic="Formula 1", half
     if compute_global:
         for contact, (chat_weighted_sum, chat_weight_sum, last_update) in per_chat.items():
             delta_days = (current_time - last_update).total_seconds() / 86400
-            decay = math.exp(-lambda_ * delta_days)  # Decay formula for this chat's aggregates
-            new_gw_sum += chat_weighted_sum * decay
-            new_gw_total += chat_weight_sum * decay
-        new_composite = round(new_gw_sum / new_gw_total, 1) if new_gw_total > 0 else 0
+            decay = math.exp(-lambda_ * delta_days)  # Decay formula for this chat's aggregates (measures time-based fade since last update)
+            new_gw_sum += chat_weighted_sum * decay  # Adjusted global weighted_sum contribution
+            new_gw_total += chat_weight_sum * decay  # Adjusted global weight_sum normalizer
+        new_composite = round(new_gw_sum / new_gw_total, 1) if new_gw_total > 0 else 0  # Global average formula: Measures network-wide topic alignment; fits as optional holistic metric.
     
     return old_chat_scores, new_composite, chat_history, cached_scores, new_gw_sum, new_gw_total, per_chat
 
@@ -284,7 +284,7 @@ def compute_user_composites(chat_scores, per_chat, compute_global=True):
     
     user_scores = {}
     for user, (weighted_sum, weight_sum) in user_composites.items():
-        user_scores[user] = round(weighted_sum / weight_sum, 1) if weight_sum > 0 else 0
+        user_scores[user] = round(weighted_sum / weight_sum, 1) if weight_sum > 0 else 0  # User average formula: Measures individual's topic engagement across their chats; fits as personalized trend/bias metric.
     
     global_composite = round(global_weighted_sum / global_weight_sum, 1) if global_weight_sum > 0 and compute_global else None
     return user_scores, global_composite
@@ -305,7 +305,7 @@ def load_caches():
             serial_per_chat = json.load(f)
             per_chat = {}
             for k, v in serial_per_chat.items():
-                key = tuple(ast.literal_eval(k)) if k.startswith('(') else k  # Secure parsing of tuple keys
+                key = tuple(ast.literal_eval(k)) if k.startswith('(') else k  # Secure parsing of tuple keys (avoids eval risks)
                 per_chat[key] = (v[0], v[1], datetime.fromisoformat(v[2]))
         return cached_scores, per_chat
     except FileNotFoundError:
@@ -320,11 +320,11 @@ def initialize_pipeline(historical_raw_messages, topic="Formula 1", half_life_da
     current_time = datetime.now()
     chat_history = group_messages_by_pair(historical_raw_messages)
     cached_scores, per_chat = load_caches()
-    chat_scores, _, cached_scores, gw_sum, gw_total, per_chat = process_chat_history(
+    chat_scores, composite, cached_scores, gw_sum, gw_total, per_chat = process_chat_history(
         chat_history, topic=topic, half_life_days=half_life_days, current_time=current_time,
         cached_scores=cached_scores, bundle_size=bundle_size, bundle_mode=bundle_mode, compute_global=compute_global
     )
-    user_scores, composite = compute_user_composites(chat_scores, per_chat, compute_global=compute_global)
+    user_scores, _ = compute_user_composites(chat_scores, per_chat, compute_global=False)  # Focus on users; global optional
     save_caches(cached_scores, per_chat)
     return chat_history, chat_scores, composite, user_scores, cached_scores, per_chat, gw_sum, gw_total
 
@@ -344,7 +344,7 @@ def daily_update_pipeline(new_raw_messages, chat_history, old_chat_scores,
         cached_scores=cached_scores, old_chat_scores=old_chat_scores, per_chat=per_chat,
         bundle_size=bundle_size, bundle_mode=bundle_mode, compute_global=compute_global
     )
-    updated_user_scores, _ = compute_user_composites(updated_chat_scores, per_chat, compute_global=False)  # Optional: Skip global if not needed
+    updated_user_scores, _ = compute_user_composites(updated_chat_scores, per_chat, compute_global=False)  # Focus on users
     save_caches(cached_scores, per_chat)
     return updated_chat_scores, updated_composite, updated_user_scores, cached_scores, per_chat, new_gw_sum, new_gw_total
 
