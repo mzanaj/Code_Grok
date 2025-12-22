@@ -1,0 +1,37 @@
+Explanation 
+### High-Level View: What the Scores Mean (For Non-Technical Audience)
+At a simple level, the scores in this system measure how much your chats (conversations) relate to a topic like "Formula 1" on a scale from 1 (not related at all) to 10 (directly about it). We focus on what's recent and ignore low-relevance noise to highlight the "signals" (important parts).
+
+- **Chat Score (Individual Conversation Score):** This is for each pair of people chatting (e.g., you and a friend). It's like asking: "How F1-focused is this specific back-and-forth?" It looks at the messages, gives more importance to new ones (recent stuff matters more), and averages the relevant parts. For example, a chat with lots of race talk might score 8-9, while casual weather chat scores 0-2.
+
+- **User Score (Per-Person Composite):** This rolls up all chats a person is in. It's like: "Overall, how much does this person talk about F1 across their friends?" If someone has one high-scoring F1 chat and others unrelated, their score might be 7—showing moderate interest. It's personalized, so you can spot "F1 fans" in your network.
+
+- **Global Composite (Optional Network-Wide Score):** This averages everything across all chats/users. It's the big picture: "How F1-obsessed is my whole messaging world?" Useful for overall trends, but less detailed than user scores.
+
+Think of it as a "topic thermometer"—hot for strong, recent relevance; cool for faded or off-topic stuff. Here's a simple bar chart showing example user scores:
+
+### In-Depth Explanation: How Scores Are Calculated
+For a deeper dive, the system uses AI (an LLM like GPT) to rate messages or groups of messages, then applies math to weight recent content more and filter junk.
+
+- **Chat Score Details:** For each conversation (key pair like ('Alice', 'Bob')), messages are grouped (e.g., by day or count), rated 1-10 by AI for topic fit. Low scores (<3) are dropped. Each group's score is multiplied by a "weight" (higher for recent, lower for old—fades by half every 7 days). The chat score is the average of these weighted ratings. Formula: Score = (sum of [rating * weight] for good groups) / (sum of weights for good groups). This measures the chat's relevance, skewed to now.
+
+- **User Score Details:** Averages a person's chat scores, using the same weighted sums. If Alice has two chats (one high, one low), her score blends them based on their strength/recency. Formula: Same average, but across the user's chats. This measures personal bias/trends—e.g., rising score = growing F1 interest.
+
+- **Global Composite Details:** Averages all chat weighted sums. Formula: Same as above, but network-wide. Measures overall topic prevalence.
+
+Here's a graph showing how weights decay over time (recent = full impact, old = minimal):
+
+### Limits and Biases: What to Watch For
+No system is perfect—here are key limitations and how it behaves in extremes, explained simply then deeply.
+
+- **High-Level Limits:** Scores favor recent stuff (good for trends, bad if history matters). Shared chats count for both users (fair but can "double-boost" pairs). Noise is filtered, but subtle F1 hints might get missed if below threshold.
+
+- **In-Depth Biases/Extremes:**
+  - **Recency Bias:** Recent messages dominate (e.g., a new F1 chat spikes scores to 9-10, even if history is low). Extreme: If no recent activity, scores decay to 0 over weeks—aware this underplays long-term interests.
+  - **Shared Chat "Double-Counting":** A high-scoring pair affects both users equally (e.g., Alice-Bob 9.0 boosts both)—logical for reciprocity, but biases toward active pairs. Extreme: One viral F1 chat inflates connected users; unrelated ones stay 0.
+  - **Threshold Bias:** Low-relevance (<3) is ignored—strengthens signals but misses weak/nuanced ones (e.g., "race" as non-F1 scores 2, filtered). Extreme: All-low chats score 0 (good for noise, bad if subtle trends exist).
+  - **Bundling Extremes:** Small bundles = granular but noisy (scores vary wildly); large/daily = stable but dilutes (one off-topic msg drags bundle down). Aware: In extremes (e.g., 100-msg day), LLM might miss details—truncate if needed.
+  - **LLM Bias:** AI might favor popular F1 aspects (e.g., Verstappen over niche)—from training data. Extreme: Cultural/language skew if non-English chats.
+  - **Zero Division Safety:** Handled—if no qualifying content, scores 0 (aware this means "no relevance," not "unknown").
+
+Overall, it's robust for trends but watch for over-reliance on recency/thresholds—cross-check with manual reviews for extremes.
