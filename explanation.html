@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Understanding Chat Relevance Scores</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .section {
+            margin-bottom: 50px;
+            animation: fadeIn 0.6s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .section h2 {
+            color: #667eea;
+            font-size: 2em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .section h3 {
+            color: #764ba2;
+            font-size: 1.5em;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+        
+        .level-indicator {
+            display: inline-block;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-weight: bold;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+        
+        .level-high {
+            background: #e3f2fd;
+            color: #1976d2;
+            border: 2px solid #1976d2;
+        }
+        
+        .level-medium {
+            background: #fff3e0;
+            color: #f57c00;
+            border: 2px solid #f57c00;
+        }
+        
+        .level-deep {
+            background: #fce4ec;
+            color: #c2185b;
+            border: 2px solid #c2185b;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .formula-box {
+            background: #f0f4ff;
+            border-left: 5px solid #667eea;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .example-box {
+            background: #fffbf0;
+            border: 2px solid #ffc107;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+        
+        .warning-box {
+            background: #fff5f5;
+            border-left: 5px solid #f44336;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        
+        .info-box {
+            background: #e8f5e9;
+            border-left: 5px solid #4caf50;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        
+        .score-card {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 15px;
+            margin: 10px;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .score-card .label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+        
+        .score-card .value {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .comparison-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        
+        .comparison-item {
+            padding: 20px;
+            border-radius: 10px;
+            border: 2px solid #e0e0e0;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .comparison-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        
+        .comparison-item h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        ul {
+            padding-left: 20px;
+            margin: 15px 0;
+        }
+        
+        li {
+            margin: 8px 0;
+        }
+        
+        .timeline-viz {
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .timeline-item {
+            text-align: center;
+            flex: 1;
+        }
+        
+        .timeline-circle {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            margin: 0 auto 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+        }
+        
+        .nav-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin: 30px 0;
+        }
+        
+        .nav-button {
+            padding: 12px 30px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+        }
+        
+        .nav-button:hover {
+            background: #764ba2;
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Understanding Chat Relevance Scores</h1>
+            <p>A guide to interpreting your conversation analytics</p>
+        </div>
+        
+        <div class="content">
+            <!-- HIGH LEVEL VIEW -->
+            <div class="section" id="high-level">
+                <span class="level-indicator level-high">🎯 HIGH LEVEL</span>
+                <h2>What Are We Measuring?</h2>
+                
+                <p style="font-size: 1.2em; margin-bottom: 30px;">
+                    We analyze your conversations to understand <strong>how relevant they are to a specific topic</strong> (e.g., Formula 1). 
+                    Think of it like a "topic thermometer" for your chats.
+                </p>
+                
+                <div class="comparison-grid">
+                    <div class="comparison-item">
+                        <h4>💬 Chat Scores</h4>
+                        <p>How much does this <strong>conversation</strong> discuss the topic?</p>
+                        <div class="score-card" style="width: 100%; margin: 20px 0;">
+                            <div class="label">Alice ↔️ Bob</div>
+                            <div class="value">8.2</div>
+                            <div class="label">Very relevant!</div>
+                        </div>
+                    </div>
+                    
+                    <div class="comparison-item">
+                        <h4>👤 User Scores</h4>
+                        <p>How much does this <strong>person</strong> engage with the topic across all their chats?</p>
+                        <div class="score-card" style="width: 100%; margin: 20px 0;">
+                            <div class="label">Alice (all chats)</div>
+                            <div class="value">7.5</div>
+                            <div class="label">Highly engaged!</div>
+                        </div>
+                    </div>
+                    
+                    <div class="comparison-item">
+                        <h4>🌍 Global Score</h4>
+                        <p>How much does the <strong>entire network</strong> discuss the topic?</p>
+                        <div class="score-card" style="width: 100%; margin: 20px 0;">
+                            <div class="label">Everyone</div>
+                            <div class="value">6.3</div>
+                            <div class="label">Moderately active</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="info-box">
+                    <h4>✅ Key Insight</h4>
+                    <p>All scores range from <strong>0 to 10</strong>, where:</p>
+                    <ul>
+                        <li><strong>0-3:</strong> Not relevant (filtered out)</li>
+                        <li><strong>4-6:</strong> Moderately relevant</li>
+                        <li><strong>7-10:</strong> Highly relevant</li>
+                    </ul>
+                </div>
+                
+                <div class="chart-container">
+                    <canvas id="scoreDistribution"></canvas>
+                </div>
+            </div>
+            
+            <!-- MEDIUM DEPTH -->
+            <div class="section" id="medium-depth">
+                <span class="level-indicator level-medium">🔍 MEDIUM DEPTH</span>
+                <h2>How Do We Calculate These Scores?</h2>
+                
+                <h3>Step 1: AI Evaluates Each Message</h3>
+                <p>An AI reads each message and asks: "On a scale of 1-10, how much does this relate to Formula 1?"</p>
+                
+                <div class="example-box">
+                    <h4>📝 Examples:</h4>
+                    <ul>
+                        <li>"Did you watch the F1 race? Verstappen won!" → <strong>Score: 10</strong> ✅</li>
+                        <li>"The weather is nice today" → <strong>Score: 1</strong> ❌ (filtered out)</li>
+                        <li>"Great strategy call in the race!" → <strong>Score: 8</strong> ✅</li>
+                    </ul>
+                </div>
+                
+                <h3>Step 2: Recent Messages Matter More</h3>
+                <p>We give <strong>more weight to recent messages</strong> because current interest is more important than old conversations.</p>
+                
+                <div class="chart-container">
+                    <canvas id="timeDecay"></canvas>
+                </div>
+                
+                <div class="formula-box">
+                    <strong>Time Weight Formula:</strong><br>
+                    weight = e<sup>-λt</sup><br><br>
+                    <em>Where t = days ago, and λ controls how fast relevance fades</em><br>
+                    <em>Default: relevance cuts in half every 7 days</em>
+                </div>
+                
+                <h3>Step 3: Combining Scores</h3>
+                <p>We compute <strong>weighted averages</strong>:</p>
+                
+                <div class="timeline-viz">
+                    <div class="timeline-item">
+                        <div class="timeline-circle" style="background: #4caf50;">10</div>
+                        <div>Today<br><small>Weight: 1.0</small></div>
+                    </div>
+                    <div style="font-size: 2em; color: #999;">→</div>
+                    <div class="timeline-item">
+                        <div class="timeline-circle" style="background: #8bc34a;">9</div>
+                        <div>3 days ago<br><small>Weight: 0.76</small></div>
+                    </div>
+                    <div style="font-size: 2em; color: #999;">→</div>
+                    <div class="timeline-item">
+                        <div class="timeline-circle" style="background: #ffc107;">7</div>
+                        <div>7 days ago<br><small>Weight: 0.50</small></div>
+                    </div>
+                    <div style="font-size: 2em; color: #999;">→</div>
+                    <div class="timeline-item">
+                        <div class="timeline-circle" style="background: #ff9800;">5</div>
+                        <div>14 days ago<br><small>Weight: 0.25</small></div>
+                    </div>
+                </div>
+                
+                <div class="formula-box">
+                    <strong>Chat Score Formula:</strong><br>
+                    Chat Score = Σ(message_score × time_weight) / Σ(time_weight)<br><br>
+                    <strong>User Score Formula:</strong><br>
+                    User Score = Σ(chat_weighted_sum) / Σ(chat_weight_sum)<br><br>
+                    <strong>Global Score Formula:</strong><br>
+                    Global = Σ(all_chat_weighted_sums) / Σ(all_chat_weight_sums)
+                </div>
+                
+                <h3>Visual Example: Building a Chat Score</h3>
+                <div class="chart-container">
+                    <canvas id="chatScoreBuild"></canvas>
+                </div>
+            </div>
+            
+            <!-- DEEP DIVE: LIMITATIONS -->
+            <div class="section" id="limitations">
+                <span class="level-indicator level-deep">⚠️ LIMITATIONS & BIASES</span>
+                <h2>What You Should Know About These Scores</h2>
+                
+                <h3>1. Bidirectional Symmetry</h3>
+                <div class="warning-box">
+                    <h4>🔄 Important: Conversations Are Treated as Single Units</h4>
+                    <p>Alice→Bob and Bob→Alice are <strong>combined into one conversation</strong>.</p>
+                    <ul>
+                        <li>✅ <strong>Good:</strong> Natural way to think about conversations</li>
+                        <li>⚠️ <strong>Watch out:</strong> Can't distinguish who initiated F1 discussions</li>
+                        <li>⚠️ <strong>Double counting:</strong> Both Alice and Bob get credit for the same conversation in their user scores</li>
+                    </ul>
+                </div>
+                
+                <div class="chart-container">
+                    <canvas id="doubleCountingViz"></canvas>
+                </div>
+                
+                <h3>2. Extreme Behavior Cases</h3>
+                
+                <div class="comparison-grid">
+                    <div class="comparison-item" style="border-color: #f44336;">
+                        <h4>🚨 All Old Messages</h4>
+                        <p><strong>Scenario:</strong> 100 F1 messages from 2 months ago</p>
+                        <p><strong>Result:</strong> Score ≈ 3-5 (heavily decayed)</p>
+                        <p><strong>Why:</strong> Time decay reduces influence</p>
+                    </div>
+                    
+                    <div class="comparison-item" style="border-color: #f44336;">
+                        <h4>📊 Score Clustering</h4>
+                        <p><strong>Scenario:</strong> Chat with 1 F1 message (score=10)</p>
+                        <p><strong>Result:</strong> Chat score = 10</p>
+                        <p><strong>Why:</strong> No other messages to average with</p>
+                    </div>
+                    
+                    <div class="comparison-item" style="border-color: #f44336;">
+                        <h4>🎯 Threshold Effects</h4>
+                        <p><strong>Scenario:</strong> Many messages scored 2.9</p>
+                        <p><strong>Result:</strong> All ignored (below threshold of 3)</p>
+                        <p><strong>Why:</strong> Hard cutoff filters noise</p>
+                    </div>
+                    
+                    <div class="comparison-item" style="border-color: #f44336;">
+                        <h4>🌊 Dilution Effect</h4>
+                        <p><strong>Scenario:</strong> User in 10 chats, only 1 about F1</p>
+                        <p><strong>Result:</strong> User score can be low even if that 1 chat is highly relevant</p>
+                        <p><strong>Why:</strong> Averaged across all conversations</p>
+                    </div>
+                </div>
+                
+                <h3>3. AI Scoring Limitations</h3>
+                <div class="warning-box">
+                    <h4>🤖 What the AI Might Miss</h4>
+                    <ul>
+                        <li><strong>Context:</strong> "He won!" might be about F1 but lacks explicit keywords</li>
+                        <li><strong>Sarcasm/Jokes:</strong> "Yeah, F1 is SO exciting 🙄" might score high despite negative sentiment</li>
+                        <li><strong>Language:</strong> Non-English F1 discussions might score lower</li>
+                        <li><strong>Abbreviations:</strong> "Max ver dominated" might score lower than "Max Verstappen dominated"</li>
+                    </ul>
+                </div>
+                
+                <h3>4. Temporal Edge Cases</h3>
+                <div class="chart-container">
+                    <canvas id="edgeCases"></canvas>
+                </div>
+                
+                <div class="info-box">
+                    <h4>📈 When Scores Work Best</h4>
+                    <ul>
+                        <li>✅ Comparing relative interest across users/chats</li>
+                        <li>✅ Tracking trends over time (weekly/monthly)</li>
+                        <li>✅ Identifying your most engaged community members</li>
+                        <li>✅ Spotting when topic interest spikes (e.g., race weekends)</li>
+                    </ul>
+                </div>
+                
+                <div class="warning-box">
+                    <h4>❌ When to Be Cautious</h4>
+                    <ul>
+                        <li>❌ Absolute score comparisons across different topics</li>
+                        <li>❌ Making decisions based on single data points</li>
+                        <li>❌ Assuming perfect accuracy in edge cases</li>
+                        <li>❌ Treating scores as objective truth vs. useful approximations</li>
+                    </ul>
+                </div>
+                
+                <h3>5. The "Double Counting" Reality</h3>
+                <p>This is the <strong>most important bias</strong> to understand:</p>
+                
+                <div class="example-box">
+                    <h4>Scenario: Alice and Bob's F1 Chat</h4>
+                    <p><strong>Conversation Score:</strong> 9.5 (highly relevant)</p>
+                    <p><strong>Alice's User Score:</strong> Gets credit from this 9.5</p>
+                    <p><strong>Bob's User Score:</strong> Also gets credit from this 9.5</p>
+                    <p><strong>Global Score:</strong> Only counts the 9.5 once</p>
+                    <br>
+                    <p><strong>🎯 Result:</strong> User scores add up to more than global score because conversations are counted in both participants' scores.</p>
+                </div>
+                
+                <div class="chart-container">
+                    <canvas id="userVsGlobal"></canvas>
+                </div>
+            </div>
+            
+            <div class="nav-buttons">
+                <button class="nav-button" onclick="document.getElementById('high-level').scrollIntoView({behavior: 'smooth'})">
+                    🎯 High Level
+                </button>
+                <button class="nav-button" onclick="document.getElementById('medium-depth').scrollIntoView({behavior: 'smooth'})">
+                    🔍 Medium Depth
+                </button>
+                <button class="nav-button" onclick="document.getElementById('limitations').scrollIntoView({behavior: 'smooth'})">
+                    ⚠️ Limitations
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Chart 1: Score Distribution
+        const ctx1 = document.getElementById('scoreDistribution').getContext('2d');
+        new Chart(ctx1, {
+            type: 'bar',
+            data: {
+                labels: ['0-2', '3-4', '5-6', '7-8', '9-10'],
+                datasets: [{
+                    label: 'Number of Chats',
+                    data: [5, 8, 15, 20, 12],
+                    backgroundColor: [
+                        'rgba(244, 67, 54, 0.6)',
+                        'rgba(255, 152, 0, 0.6)',
+                        'rgba(255, 193, 7, 0.6)',
+                        'rgba(139, 195, 74, 0.6)',
+                        'rgba(76, 175, 80, 0.6)'
+                    ],
+                    borderColor: [
+                        'rgba(244, 67, 54, 1)',
+                        'rgba(255, 152, 0, 1)',
+                        'rgba(255, 193, 7, 1)',
+                        'rgba(139, 195, 74, 1)',
+                        'rgba(76, 175, 80, 1)'
+                    ],
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Example: Distribution of Chat Scores',
+                        font: { size: 16, weight: 'bold' }
+                    },
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Number of Conversations' }
+                    },
+                    x: {
+                        title: { display: true, text: 'Score Range' }
+                    }
+                }
+            }
+        });
+        
+        // Chart 2: Time Decay
+        const ctx2 = document.getElementById('timeDecay').getContext('2d');
+        const days = Array.from({length: 31}, (_, i) => i);
+        const weights = days.map(d => Math.exp(-Math.log(2) / 7 * d));
+        
+        new Chart(ctx2, {
+            type: 'line',
+            data: {
+                labels: days,
+                datasets: [{
+                    label: 'Time Weight (influence)',
+                    data: weights,
+                    borderColor: 'rgba(102, 126, 234, 1)',
+                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                    fill: true,
+                    tension: 0.4,
+                    borderWidth: 3
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'How Message Influence Decays Over Time',
+                        font: { size: 16, weight: 'bold' }
+                    },
+                    annotation: {
+                        annotations: {
+                            line1: {
+                                type: 'line',
+                                xMin: 7,
+                                xMax: 7,
+                                borderColor: 'red',
+                                borderWidth: 2,
+                                borderDash: [5, 5],
+                                label: {
+                                    content: 'Half-life (7 days)',
+                                    enabled: true
+                                }
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 1,
+                        title: { display: true, text: 'Weight (0 = no influence, 1 = full influence)' }
+                    },
+                    x: {
+                        title: { display: true, text: 'Days Ago' }
+                    }
+                }
+            }
+        });
+        
+        // Chart 3: Chat Score Building
+        const ctx3 = document.getElementById('chatScoreBuild').getContext('2d');
+        new Chart(ctx3, {
+            type: 'bar',
+            data: {
+                labels: ['Msg 1\n(today, score=10)', 'Msg 2\n(2d ago, score=9)', 'Msg 3\n(5d ago, score=8)', 'Msg 4\n(10d ago, score=7)'],
+                datasets: [{
+                    label: 'Weighted Contribution',
+                    data: [10.0, 7.4, 5.5, 3.5],
+                    backgroundColor: 'rgba(102, 126, 234, 0.6)',
+                    borderColor: 'rgba(102, 126, 234, 1)',
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Building a Chat Score: Weighted Average = 7.8',
+                        font: { size: 16, weight: 'bold' }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Weighted Score Contribution' }
+                    }
+                }
+            }
+        });
+        
+        // Chart 4: Double Counting Visualization
+        const ctx4 = document.getElementById('doubleCountingViz').getContext('2d');
+        new Chart(ctx4, {
+            type: 'bar',
+            data: {
+                labels: ['Alice-Bob Chat', 'Alice User Score', 'Bob User Score', 'Global Score'],
+                datasets: [{
+                    label: 'How the 9.5 score is counted',
+                    data: [9.5, 9.5, 9.5, 9.5],
+                    backgroundColor: [
+                        'rgba(102, 126, 234, 0.6)',
+                        'rgba(255, 152, 0, 0.6)',
+                        'rgba(255, 152, 0, 0.6)',
+                        'rgba(76, 175, 80, 0.6)'
+                    ],
+                    borderColor: [
+                        'rgba(102, 126, 234, 1)',
+                        'rgba(255, 152, 0, 1)',
+                        'rgba(255, 152, 0, 1)',
+                        'rgba(76, 175, 80, 1)'
+                    ],
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Double Counting: Same Conversation Credits Both Users',
+                        font: { size: 16, weight: 'bold' }
+                    },
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 10,
+                        title: { display: true, text: 'Score Value' }
+                    }
+                }
+            }
+        });
+        
+        // Chart 5: Edge Cases
+        const ctx5 = document.getElementById('edgeCases').getContext('2d');
+        new Chart(ctx5, {
+            type: 'line',
+            data: {
+                labels: ['Week 1', 'Week 2', 'Week 3', 'Week 4'],
+                datasets: [
+                    {
+                        label: 'Normal Activity',
+                        data: [6.5, 6.8, 6.3, 6.7],
+                        borderColor: 'rgba(76, 175, 80, 1)',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        tension: 0.4,
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Spike then Silence',
+                        data: [3.0, 9.5, 5.2, 2.8],
+                        borderColor: 'rgba(244, 67, 54, 1)',
+                        backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                        tension: 0.4,
+                        borderWidth: 2
+                    },
+                    {
+                        label: 'Old Messages Only',
+                        data: [7.0, 5.5, 4.0, 3.0],
+                        borderColor: 'rgba(255, 152, 0, 1)',
+                        backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                        tension: 0.4,
+                        borderWidth: 2
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Different Temporal Patterns & Their Scores',
+                        font: { size: 16, weight: 'bold' }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 10,
+                        title: { display: true, text: 'Score' }
+                    }
+                }
+            }
+        });
+        
+        // Chart 6: User vs Global
