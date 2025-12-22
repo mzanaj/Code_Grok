@@ -746,3 +746,50 @@
         });
         
         // Chart 6: User vs Global
+        const ctx6 = document.getElementById('userVsGlobal').getContext('2d');
+        new Chart(ctx6, {
+            type: 'bar',
+            data: {
+                labels: ['Alice', 'Bob', 'Charlie', 'Sum of Users', 'Global Score'],
+                datasets: [{
+                    label: 'Scores',
+                    data: [8.5, 7.2, 6.8, 22.5, 7.5],
+                    backgroundColor: [
+                        'rgba(102, 126, 234, 0.6)',
+                        'rgba(102, 126, 234, 0.6)',
+                        'rgba(102, 126, 234, 0.6)',
+                        'rgba(244, 67, 54, 0.6)',
+                        'rgba(76, 175, 80, 0.6)'
+                    ],
+                    borderColor: [
+                        'rgba(102, 126, 234, 1)',
+                        'rgba(102, 126, 234, 1)',
+                        'rgba(102, 126, 234, 1)',
+                        'rgba(244, 67, 54, 1)',
+                        'rgba(76, 175, 80, 1)'
+                    ],
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Why User Scores Don\'t Add Up to Global (Double Counting)',
+                        font: { size: 16, weight: 'bold' }
+                    },
+                    legend: { display: false }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'Score Value' }
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
