@@ -638,3 +638,93 @@ gradient_html = """
 </div>
 """.format(min_z, max_z)
 st.markdown(gradient_html, unsafe_allow_html=True)
+
+
+#############
+[server]
+# Increase to 500MB to handle the 1M point JSON/Arrow payload
+maxMessageSize = 500
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pydeck as pdk
+from matplotlib import colormaps
+
+st.set_page_config(layout="wide")
+
+# --- 1. OPTIMIZED DATA GENERATION ---
+@st.cache_data
+def get_large_dataset(n_points=1_000_000):
+    # Keep only the columns you absolutely need: lat, lon, z
+    df = pd.DataFrame({
+        "lat": np.random.uniform(37.7, 37.8, n_points),
+        "lon": np.random.uniform(-122.5, -122.3, n_points),
+        "z": np.random.random(n_points)
+    })
+    return df
+
+data = get_large_dataset()
+
+# --- 2. BASE LAYER & COLOR SELECTION ---
+with st.sidebar:
+    st.title("Map Controls")
+    # Multiple Base Layer Options
+    map_style = st.selectbox(
+        "Base Map Layer",
+        options=["dark", "light", "road", "satellite", "outlines"],
+        index=0
+    )
+    
+    # "Rotating" / Dynamic Legend Selection
+    color_palette = st.selectbox("Color Legend (Column Z)", ["viridis", "plasma", "inferno", "magma"])
+    point_radius = st.slider("Point Size", 1, 50, 5)
+
+# --- 3. PRE-CALCULATE COLORS (Efficiency Step) ---
+# Mapping Z values to RGB in Python is 10x faster than letting the JS engine do it
+cmap = colormaps.get_cmap(color_palette)
+colors = (cmap(data['z'])[:, :3] * 255).astype(np.uint8)
+data['r'], data['g'], data['b'] = colors[:, 0], colors[:, 1], colors[:, 2]
+
+# --- 4. PYDECK LAYER DEFINITION ---
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    data,
+    get_position="[lon, lat]",
+    # Referencing the pre-calculated r, g, b columns
+    get_fill_color="[r, g, b, 150]", 
+    get_radius=point_radius,
+    pickable=True,
+)
+
+# --- 5. THE MAP ---
+view_state = pdk.ViewState(latitude=37.76, longitude=-122.4, zoom=11, pitch=45)
+
+st.pydeck_chart(pdk.Deck(
+    map_style=f"mapbox://styles/mapbox/{map_style}-v9",
+    initial_view_state=view_state,
+    layers=[layer],
+    tooltip={"text": "Value: {z}"}
+))
+
+# --- 6. DYNAMIC CSS LEGEND ---
+# This creates a "rotating" legend that updates based on the selected palette
+st.markdown(f"""
+    <div style="position: fixed; bottom: 50px; right: 50px; z-index: 1000; 
+                background: white; padding: 10px; border-radius: 5px; border: 1px solid #ccc;">
+        <b>Value Z ({color_palette})</b><br>
+        <div style="width: 200px; height: 20px; background: linear-gradient(to right, 
+            {','.join([f'rgb({int(c[0]*255)},{int(c[1]*255)},{int(c[2]*255)})' 
+            for c in cmap(np.linspace(0,1,5))])});">
+        </div>
+        <div style="display: flex; justify-content: space-between; font-size: 12px;">
+            <span>0.0</span><span>1.0</span>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+tile_layer = pdk.Layer(
+    "TileLayer",
+    data="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    # Set to a very high index or low opacity to act as a background
+)
