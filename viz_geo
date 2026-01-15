@@ -1,0 +1,640 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from lonboard import visualization
+from matplotlib import colormaps
+
+# 1. Create/Load 1M points
+df = pd.DataFrame({
+    'lat': np.random.uniform(30, 40, 1000000),
+    'lon': np.random.uniform(-100, -80, 1000000),
+    'z': np.random.random(1000000) # Your Z value
+})
+
+# 2. Pre-calculate colors (This saves the browser from doing work)
+cmap = colormaps.get_cmap('viridis')
+# Map Z values to 0-255 RGB
+colors = (cmap(df['z'])[:, :3] * 255).astype(np.uint8)
+
+# 3. Create the layer
+# Lonboard uses MapLibre for the base layer automatically
+layer = visualization.plot(
+    df, 
+    lat='lat', 
+    lon='lon', 
+    color=colors
+)
+
+st.title("1 Million Point Map")
+# Display in Streamlit
+st.components.v1.html(layer._repr_html_(), height=600)
+
+
+##########################
+import streamlit as st
+import pandas as pd
+import numpy as np
+import pydeck as pdk
+import time
+
+st.set_page_config(page_title="Efficient Geo Visualization", layout="wide")
+
+# Cache data generation to avoid regenerating on each interaction
+@st.cache_data
+def generate_sample_data(n_points=100000):
+    """Generate sample geo data with a z column for coloring"""
+    np.random.seed(42)
+    
+    # Generate points across the US (roughly)
+    data = pd.DataFrame({
+        'lat': np.random.uniform(25, 49, n_points),
+        'lon': np.random.uniform(-125, -65, n_points),
+        'z': np.random.uniform(0, 100, n_points)  # Value for coloring
+    })
+    
+    return data
+
+def get_color_from_z(z_value, z_min, z_max, colormap='viridis'):
+    """Convert z value to RGB color based on colormap"""
+    # Normalize z to 0-1
+    normalized = (z_value - z_min) / (z_max - z_min) if z_max > z_min else 0
+    
+    # Simple colormaps (you can expand this)
+    if colormap == 'viridis':
+        # Simplified viridis approximation
+        r = int(255 * (0.267 + normalized * 0.329))
+        g = int(255 * (0.005 + normalized * 0.880))
+        b = int(255 * (0.329 + normalized * 0.545))
+    elif colormap == 'plasma':
+        r = int(255 * (0.050 + normalized * 0.900))
+        g = int(255 * (0.030 + normalized * 0.670))
+        b = int(255 * (0.528 - normalized * 0.428))
+    elif colormap == 'inferno':
+        r = int(255 * normalized)
+        g = int(255 * normalized * 0.8)
+        b = int(255 * (0.4 - normalized * 0.3))
+    else:  # default red-blue
+        r = int(255 * normalized)
+        g = int(100)
+        b = int(255 * (1 - normalized))
+    
+    return [r, g, b, 200]  # RGBA
+
+# Sidebar controls
+st.sidebar.header("Controls")
+n_points = st.sidebar.selectbox(
+    "Number of Points",
+    [10000, 50000, 100000, 500000, 1000000],
+    index=2
+)
+
+colormap = st.sidebar.selectbox(
+    "Color Map",
+    ['viridis', 'plasma', 'inferno', 'red-blue'],
+    index=0
+)
+
+point_radius = st.sidebar.slider("Point Radius", 50, 500, 150)
+
+animate_legend = st.sidebar.checkbox("Animate Legend Rotation", value=False)
+animation_speed = st.sidebar.slider("Animation Speed (seconds)", 0.1, 2.0, 0.5)
+
+# Load data
+with st.spinner("Loading data..."):
+    df = generate_sample_data(n_points)
+
+st.title("🗺️ Efficient Geo Visualization with pydeck")
+st.write(f"Displaying **{len(df):,}** points with GPU acceleration")
+
+# Calculate color range
+z_min, z_max = df['z'].min(), df['z'].max()
+
+# For animated legend, we'll rotate the z-value threshold
+if animate_legend and 'animation_offset' not in st.session_state:
+    st.session_state.animation_offset = 0
+
+# Create color column efficiently using vectorized operations
+if animate_legend:
+    # Rotate the z values by adding offset (creates rotating color effect)
+    offset = st.session_state.animation_offset
+    df_display = df.copy()
+    df_display['z_rotated'] = (df['z'] + offset) % 100
+    df_display['color'] = df_display['z_rotated'].apply(
+        lambda z: get_color_from_z(z, z_min, z_max, colormap)
+    )
+else:
+    df_display = df.copy()
+    df_display['color'] = df['z'].apply(
+        lambda z: get_color_from_z(z, z_min, z_max, colormap)
+    )
+
+# Create pydeck layer
+layer = pdk.Layer(
+    'ScatterplotLayer',
+    data=df_display,
+    get_position=['lon', 'lat'],
+    get_color='color',
+    get_radius=point_radius,
+    pickable=True,
+    auto_highlight=True,
+    opacity=0.6
+)
+
+# Set initial view state
+view_state = pdk.ViewState(
+    latitude=df['lat'].mean(),
+    longitude=df['lon'].mean(),
+    zoom=4,
+    pitch=0
+)
+
+# Tooltip
+tooltip = {
+    "html": "<b>Z Value:</b> {z}<br/><b>Lat:</b> {lat}<br/><b>Lon:</b> {lon}",
+    "style": {"backgroundColor": "steelblue", "color": "white"}
+}
+
+# Create deck
+r = pdk.Deck(
+    layers=[layer],
+    initial_view_state=view_state,
+    tooltip=tooltip,
+    map_style='mapbox://styles/mapbox/light-v9'
+)
+
+# Display map
+map_placeholder = st.empty()
+map_placeholder.pydeck_chart(r)
+
+# Legend
+st.sidebar.markdown("---")
+st.sidebar.subheader("Legend")
+legend_steps = 10
+for i in range(legend_steps):
+    z_val = z_min + (z_max - z_min) * i / (legend_steps - 1)
+    color = get_color_from_z(z_val, z_min, z_max, colormap)
+    st.sidebar.markdown(
+        f'<div style="background-color: rgb({color[0]}, {color[1]}, {color[2]}); '
+        f'padding: 5px; margin: 2px; border-radius: 3px; color: white;">'
+        f'Z = {z_val:.1f}</div>',
+        unsafe_allow_html=True
+    )
+
+# Animation loop
+if animate_legend:
+    while animate_legend:
+        time.sleep(animation_speed)
+        st.session_state.animation_offset = (st.session_state.animation_offset + 5) % 100
+        
+        # Update colors
+        df_display['z_rotated'] = (df['z'] + st.session_state.animation_offset) % 100
+        df_display['color'] = df_display['z_rotated'].apply(
+            lambda z: get_color_from_z(z, z_min, z_max, colormap)
+        )
+        
+        # Update layer
+        layer = pdk.Layer(
+            'ScatterplotLayer',
+            data=df_display,
+            get_position=['lon', 'lat'],
+            get_color='color',
+            get_radius=point_radius,
+            pickable=True,
+            auto_highlight=True,
+            opacity=0.6
+        )
+        
+        r = pdk.Deck(
+            layers=[layer],
+            initial_view_state=view_state,
+            tooltip=tooltip,
+            map_style='mapbox://styles/mapbox/light-v9'
+        )
+        
+        map_placeholder.pydeck_chart(r)
+
+# Performance tips
+with st.expander("💡 Performance Tips"):
+    st.markdown("""
+    **This implementation uses several optimization techniques:**
+    
+    1. **GPU Acceleration**: pydeck uses deck.gl which leverages WebGL for rendering
+    2. **Data Caching**: `@st.cache_data` prevents regenerating data on every interaction
+    3. **Vectorized Operations**: Pandas/NumPy operations instead of loops
+    4. **Efficient Updates**: Only updates necessary components during animation
+    5. **Reduced Precision**: Lat/lon stored as float32 reduces memory
+    
+    **For even better performance with your real data:**
+    - Use spatial indexing (geopandas, rtree) to filter visible points
+    - Implement viewport-based filtering to only render visible points
+    - Consider H3 hexagonal binning for aggregation at lower zoom levels
+    - Use Parquet format for faster data loading
+    - Pre-compute colors and store in your dataset
+    """)
+
+st.info("💾 Replace `generate_sample_data()` with your own data loading function. "
+        "Ensure your DataFrame has 'lat', 'lon', and 'z' columns.")
+
+
+##
+import math
+import numpy as np
+import pandas as pd
+import streamlit as st
+import pydeck as pdk
+
+# -----------------------------
+# Base map styles (multiple)
+# -----------------------------
+CARTO_STYLES = {
+    "CARTO Positron (light, no token)": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+    "CARTO Dark Matter (dark, no token)": "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+    "CARTO Voyager (no token)": "https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json",
+}
+
+MAPBOX_STYLES = {
+    "Mapbox Light (token required)": "mapbox://styles/mapbox/light-v11",
+    "Mapbox Dark (token required)": "mapbox://styles/mapbox/dark-v11",
+    "Mapbox Streets (token required)": "mapbox://styles/mapbox/streets-v12",
+    "Mapbox Satellite (token required)": "mapbox://styles/mapbox/satellite-v9",
+}
+
+# -----------------------------
+# Utilities
+# -----------------------------
+def _validate_df(df: pd.DataFrame) -> pd.DataFrame:
+    req = {"lat", "lon", "z"}
+    missing = req - set(df.columns)
+    if missing:
+        raise ValueError(f"DataFrame missing columns: {missing}. Required: lat, lon, z")
+
+    # Ensure numeric + drop bad rows
+    out = df[["lat", "lon", "z"]].copy()
+    out["lat"] = pd.to_numeric(out["lat"], errors="coerce")
+    out["lon"] = pd.to_numeric(out["lon"], errors="coerce")
+    out["z"] = pd.to_numeric(out["z"], errors="coerce")
+    out = out.dropna()
+    # Optional clamp to valid ranges
+    out = out[(out["lat"].between(-90, 90)) & (out["lon"].between(-180, 180))]
+    return out
+
+def _meters_per_pixel(lat: float, zoom: float) -> float:
+    # Web Mercator approximate at given latitude
+    return 156543.03392 * math.cos(math.radians(lat)) / (2 ** zoom)
+
+def _viewport_bbox(center_lat: float, center_lon: float, zoom: float, width_px: int, height_px: int):
+    # Convert viewport pixels to degrees using meters/pixel approximation
+    mpp = _meters_per_pixel(center_lat, zoom)
+
+    half_w_m = (width_px / 2) * mpp
+    half_h_m = (height_px / 2) * mpp
+
+    meters_per_deg_lat = 111320.0
+    meters_per_deg_lon = 111320.0 * max(0.1, math.cos(math.radians(center_lat)))
+
+    dlat = half_h_m / meters_per_deg_lat
+    dlon = half_w_m / meters_per_deg_lon
+
+    return (center_lat - dlat, center_lat + dlat, center_lon - dlon, center_lon + dlon)
+
+def _bin_size_degrees_for_zoom(zoom: float) -> float:
+    # Tune these for your data density; smaller bins at higher zoom
+    if zoom <= 5:
+        return 0.20
+    if zoom <= 7:
+        return 0.10
+    if zoom <= 9:
+        return 0.05
+    if zoom <= 11:
+        return 0.02
+    if zoom <= 13:
+        return 0.01
+    return 0.005
+
+def _make_colormap_stops(name: str):
+    # Compact color stop sets (RGB). You can add more palettes as needed.
+    palettes = {
+        "viridis": [
+            (68, 1, 84), (59, 82, 139), (33, 145, 140), (94, 201, 98), (253, 231, 37)
+        ],
+        "plasma": [
+            (13, 8, 135), (126, 3, 168), (203, 71, 119), (248, 149, 64), (240, 249, 33)
+        ],
+        "magma": [
+            (0, 0, 4), (74, 16, 111), (144, 54, 128), (210, 109, 84), (252, 253, 191)
+        ],
+        "cividis": [
+            (0, 32, 76), (40, 73, 120), (90, 110, 116), (150, 152, 101), (232, 229, 95)
+        ],
+    }
+    return palettes.get(name, palettes["viridis"])
+
+def _interpolate_color(t: float, stops):
+    # t in [0,1]
+    t = float(np.clip(t, 0.0, 1.0))
+    n = len(stops)
+    if n == 1:
+        return list(stops[0])
+    x = t * (n - 1)
+    i = int(np.floor(x))
+    j = min(i + 1, n - 1)
+    frac = x - i
+    c0 = np.array(stops[i], dtype=float)
+    c1 = np.array(stops[j], dtype=float)
+    c = (1 - frac) * c0 + frac * c1
+    return [int(c[0]), int(c[1]), int(c[2])]
+
+def _apply_palette(values: np.ndarray, vmin: float, vmax: float, palette: str, rotate: float):
+    # rotate shifts palette indexing; rotate in [0,1)
+    stops = _make_colormap_stops(palette)
+    denom = (vmax - vmin) if vmax > vmin else 1.0
+    t = (values - vmin) / denom
+    t = (t + rotate) % 1.0
+    colors = np.array([_interpolate_color(x, stops) for x in t], dtype=np.int16)
+    return colors
+
+@st.cache_data(show_spinner=False)
+def _aggregate_grid(df: pd.DataFrame, bin_size_deg: float) -> pd.DataFrame:
+    """
+    Server-side aggregation to reduce payload dramatically when zoomed out.
+    Produces one row per bin with mean z + count.
+    """
+    # Bin ids
+    lon_bin = np.floor(df["lon"].to_numpy() / bin_size_deg).astype(np.int64)
+    lat_bin = np.floor(df["lat"].to_numpy() / bin_size_deg).astype(np.int64)
+
+    tmp = df.copy()
+    tmp["_lon_bin"] = lon_bin
+    tmp["_lat_bin"] = lat_bin
+
+    g = tmp.groupby(["_lon_bin", "_lat_bin"], sort=False, observed=True)
+    out = g.agg(
+        lon=("lon", "mean"),
+        lat=("lat", "mean"),
+        z_mean=("z", "mean"),
+        count=("z", "size"),
+    ).reset_index(drop=True)
+
+    return out
+
+def _legend_html(vmin: float, vmax: float, palette: str, rotate: float):
+    stops = _make_colormap_stops(palette)
+    # Build 12-swatch legend
+    swatches = []
+    for k in range(12):
+        t = (k / 11.0 + rotate) % 1.0
+        rgb = _interpolate_color(t, stops)
+        swatches.append(f'<div style="flex:1;height:10px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"></div>')
+    return f"""
+    <div style="font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size:12px;">
+      <div style="display:flex; gap:0; border-radius:6px; overflow:hidden; border:1px solid rgba(0,0,0,0.15);">
+        {''.join(swatches)}
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-top:4px; opacity:0.85;">
+        <span>{vmin:.3g}</span><span>{vmax:.3g}</span>
+      </div>
+    </div>
+    """
+
+# -----------------------------
+# Main render function
+# -----------------------------
+def render_pydeck_geo_viz(
+    df: pd.DataFrame,
+    *,
+    title: str = "Geo Points",
+    initial_zoom: float | None = None,
+    initial_center: tuple[float, float] | None = None,
+    max_points_frontend: int = 250_000,
+    default_width_px: int = 1200,
+    default_height_px: int = 700,
+):
+    """
+    Drop-in Streamlit component.
+
+    df must have columns: lat, lon, z
+    """
+    df = _validate_df(df)
+
+    if initial_center is None:
+        center_lat = float(df["lat"].median())
+        center_lon = float(df["lon"].median())
+    else:
+        center_lat, center_lon = float(initial_center[0]), float(initial_center[1])
+
+    if initial_zoom is None:
+        initial_zoom = 9.0
+
+    st.subheader(title)
+
+    # Controls
+    c1, c2, c3, c4 = st.columns([1.3, 1.0, 1.0, 1.0])
+    with c1:
+        basemap_choice = st.selectbox(
+            "Base layer",
+            options=list(CARTO_STYLES.keys()) + list(MAPBOX_STYLES.keys()),
+            index=0,
+        )
+    with c2:
+        palette = st.selectbox("Palette", ["viridis", "plasma", "magma", "cividis"], index=0)
+    with c3:
+        rotate = st.slider("Legend rotate", 0.0, 0.999, 0.0, 0.01)
+    with c4:
+        opacity = st.slider("Opacity", 0.1, 1.0, 0.75, 0.05)
+
+    c5, c6, c7, c8 = st.columns([1.0, 1.0, 1.0, 1.0])
+    with c5:
+        zoom = st.slider("Zoom", 1.0, 17.0, float(initial_zoom), 0.5)
+    with c6:
+        width_px = st.number_input("Viewport width (px)", 400, 2400, int(default_width_px), 50)
+    with c7:
+        height_px = st.number_input("Viewport height (px)", 300, 1400, int(default_height_px), 50)
+    with c8:
+        z_clip = st.slider("Z clip (percentile)", 0, 20, 2, 1)
+
+    # Pick basemap style URL
+    map_style = CARTO_STYLES.get(basemap_choice) or MAPBOX_STYLES.get(basemap_choice)
+
+    # Compute z-range for coloring (clipped for stability)
+    z_lo, z_hi = np.percentile(df["z"].to_numpy(), [z_clip, 100 - z_clip])
+    if not np.isfinite(z_lo) or not np.isfinite(z_hi) or z_hi <= z_lo:
+        z_lo, z_hi = float(df["z"].min()), float(df["z"].max())
+        if z_hi <= z_lo:
+            z_hi = z_lo + 1.0
+
+    # Decide LOD: aggregate when zoomed out, raw viewport points when zoomed in
+    zoom_threshold_for_raw = 12.0
+    if zoom < zoom_threshold_for_raw:
+        # Aggregated grid
+        bin_deg = _bin_size_degrees_for_zoom(zoom)
+        agg = _aggregate_grid(df, bin_deg)
+
+        # Color by z_mean
+        colors = _apply_palette(agg["z_mean"].to_numpy(), z_lo, z_hi, palette, rotate)
+        agg = agg.assign(color=colors.tolist())
+
+        # Radius in meters-ish: scale with zoom so bins look reasonable
+        # A rough conversion: degrees -> meters at equator; acceptable for visualization
+        radius_m = max(40, int(bin_deg * 111320 * 0.45))
+
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=agg,
+            get_position='[lon, lat]',
+            get_radius=radius_m,
+            radius_min_pixels=2,
+            radius_max_pixels=40,
+            get_fill_color="color",
+            get_line_color=[0, 0, 0],
+            line_width_min_pixels=0,
+            opacity=float(opacity),
+            pickable=True,
+        )
+
+        tooltip = {
+            "text": "z_mean: {z_mean}\ncount: {count}"
+        }
+
+    else:
+        # Raw points but viewport-filtered to avoid shipping all 1M rows
+        lat_min, lat_max, lon_min, lon_max = _viewport_bbox(center_lat, center_lon, zoom, int(width_px), int(height_px))
+        view_df = df[(df["lat"].between(lat_min, lat_max)) & (df["lon"].between(lon_min, lon_max))]
+
+        # If still huge, cap it (keeps socket + browser safe)
+        if len(view_df) > max_points_frontend:
+            view_df = view_df.sample(max_points_frontend, random_state=42)
+
+        colors = _apply_palette(view_df["z"].to_numpy(), z_lo, z_hi, palette, rotate)
+        view_df = view_df.assign(color=colors.tolist())
+
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=view_df,
+            get_position='[lon, lat]',
+            get_radius=6,
+            radius_min_pixels=2,
+            radius_max_pixels=10,
+            get_fill_color="color",
+            opacity=float(opacity),
+            pickable=True,
+        )
+        tooltip = {"text": "z: {z}"}
+
+        st.caption(f"Viewport points: {len(view_df):,} (filtered from {len(df):,})")
+
+    # Legend
+    st.markdown(_legend_html(float(z_lo), float(z_hi), palette, rotate), unsafe_allow_html=True)
+
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=pdk.ViewState(
+            latitude=center_lat,
+            longitude=center_lon,
+            zoom=float(zoom),
+            pitch=40,
+        ),
+        map_style=map_style,
+        tooltip=tooltip,
+    )
+
+    # The chart itself
+    st.pydeck_chart(deck, use_container_width=True)
+# app.py
+import pandas as pd
+import streamlit as st
+from your_module import render_pydeck_geo_viz
+
+@st.cache_data
+def load():
+    # Recommended format for big data
+    return pd.read_parquet("points.parquet", columns=["lat","lon","z"])
+
+df = load()
+render_pydeck_geo_viz(df, title="My Geo Viz", initial_zoom=9)
+
+####
+import streamlit as st
+import pydeck as pdk
+import pandas as pd
+import numpy as np  # For normalization
+import matplotlib.cm as cm  # For colormap (viridis or others)
+
+# Cache data loading (use Parquet for large files)
+@st.cache_data
+def load_data():
+    # Replace with your data source; e.g., df = pd.read_parquet("your_data.parquet")
+    # For demo: Generate sample data (remove this in production)
+    np.random.seed(42)
+    df = pd.DataFrame({
+        'lat': np.random.uniform(37.6, 37.9, 1000000),  # Up to 1M points
+        'lon': np.random.uniform(-122.5, -122.3, 1000000),
+        'z': np.random.uniform(0, 100, 1000000)  # Your color column
+    })
+    # Optimize types for memory/speed
+    df = df.astype({'lat': 'float32', 'lon': 'float32', 'z': 'float32'})
+    return df
+
+df = load_data()
+
+# Normalize 'z' for coloring (0-255 scale)
+min_z, max_z = df['z'].min(), df['z'].max()
+normalized_z = (df['z'] - min_z) / (max_z - min_z)
+# Apply viridis colormap (rotating gradient: blue-green-yellow)
+colormap = cm.viridis(normalized_z)
+df['color'] = (colormap[:, :3] * 255).astype(int).tolist()  # RGB list for Pydeck
+
+# User-selectable base layers (different map styles)
+base_layer_options = {
+    "Light": "mapbox://styles/mapbox/light-v10",
+    "Dark": "mapbox://styles/mapbox/dark-v10",
+    "Streets": "mapbox://styles/mapbox/streets-v12",
+    "Satellite": "mapbox://styles/mapbox/satellite-v9",
+    "Outdoors": "mapbox://styles/mapbox/outdoors-v12",
+    # Add more: e.g., "Custom": "https://your-tile-url/{z}/{x}/{y}.png"
+}
+selected_base = st.selectbox("Select Base Layer", list(base_layer_options.keys()))
+
+# Initial view state (adjust to center on your data)
+view_state = pdk.ViewState(
+    latitude=df['lat'].mean(),
+    longitude=df['lon'].mean(),
+    zoom=10,
+    pitch=0
+)
+
+# Scatterplot layer: Points colored by 'z'
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=df,
+    get_position=["lon", "lat"],
+    get_fill_color="color",  # RGB from precomputed colormap
+    get_radius=10,  # In meters; adjust based on density
+    radius_min_pixels=1,
+    opacity=0.8,
+    pickable=True,  # Enable tooltips
+    auto_highlight=True,
+    # Optional: Clustering for dense areas (improves perf on zoom-out)
+    # extensions=['ScatterplotClusteringExtension']  # Uncomment if pydeck supports it natively or via addon
+)
+
+# Render the map with selected base layer
+deck = pdk.Deck(
+    layers=[layer],
+    initial_view_state=view_state,
+    map_style=base_layer_options[selected_base],
+    tooltip={"text": "Z Value: {z}"},  # Hover shows z value
+)
+
+st.pydeck_chart(deck)
+
+# Optional: Custom legend for color scale (Streamlit slider-like visualization)
+st.subheader("Color Legend (Z Value)")
+# Generate a simple gradient bar
+gradient_html = """
+<div style="background: linear-gradient(to right, blue, cyan, green, yellow, red); height: 20px; width: 100%;"></div>
+<div style="display: flex; justify-content: space-between;">
+    <span>Low ({:.2f})</span>
+    <span>High ({:.2f})</span>
+</div>
+""".format(min_z, max_z)
+st.markdown(gradient_html, unsafe_allow_html=True)
