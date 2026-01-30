@@ -1,0 +1,122 @@
+# Image Search Tool Specifications Document
+
+**Document Version:** 1.2  
+**Date:** January 29, 2026  
+**Author:** Grok (xAI Assistant)  
+**Prepared For:** Marvin (SuperGrok Subscriber, Falls Church, VA)  
+**Purpose:** This is a refined blueprint (V1.2) for the multi-mode image search tool, tweaking only key areas for precision and stability based on validated feedback. Changes include: PQ training step, BM25 score normalization with SQLite FTS5 indexing, gap-based thresholding constraints, pHash Hamming distance threshold, multi-crop clarification (query-time average), stratified evaluation metrics, and LanceDB as a noted future option with caveats. No new features or scope added.
+
+## 1. Overview
+### Project Description
+The tool enables users to search a growing image collection (initially 10k-100k, expanding at ~10 images/hour) via image upload or text input, selecting a mode (SEMANTIC, SIMILAR, FACE), and retrieving matches based on embeddings, calibrated thresholds, and re-ranking. It handles sparse/mixed content with OCR for text-heavy images, synthetic calibration via `quer_llm()`, and enhanced robustness (e.g., deduplication, adaptive thresholding).
+
+### Key Features
+- **Search Modes**: SEMANTIC (concepts/vibes), SIMILAR (visuals/textures), FACE (identity, with per-face quality weighting).
+- **Query Types**: Image upload or text (SEMANTIC); hybrid image+text support via score fusion.
+- **OCR Integration**: PaddleOCR for extraction; late fusion with weighted scores/BM25 for better signal preservation.
+- **Thresholding**: Hybrid LLM-empirical calibration; per-query adaptive (gap-based).
+- **Deduplication**: Perceptual hashing (pHash) to detect/flag near-duplicates.
+- **Expansion**: Incremental adds with tombstones for deletions; periodic rebuilds.
+- **UI**: Basic Streamlit app.
+- **Robustness**: Concurrency locks, query caching, logging, diversity-aware eval, hard negative testing.
+
+### Assumptions and Constraints
+- **Hardware**: Local machine; GPU optional (PyTorch auto-detect).
+- **Collection**: Local folder (JPG/PNG); no initial labels.
+- **LLM Access**: `quer_llm()` for synthetics (prompts for binary labels/reasons; returns JSON).
+- **Scale**: MVP for 10k-100k; PQ compression for efficiency; LanceDB as future option (see caveats in Section 2).
+
+### Success Metrics
+- Query time: <2s CPU, <1s GPU.
+- Precision/Recall: 80%+ mAP@K on hybrid val set (synthetic + small human-labeled).
+- Robustness: Handle 95% edges (e.g., noisy inputs, deletions); track diversity (MMR@K) and latency.
+
+## 2. Architecture
+### High-Level Components
+- **Frontend**: Streamlit for inputs/outputs.
+- **Backend**:
+  - **Storage**: Local folder + SQLite (metadata: paths, timestamps, deleted flags, pHashes, OCR text).
+  - **Embedding Pipeline**: Mode-specific + OCR late fusion.
+  - **Indexing/Search**: FAISS (HNSW with PQ compression); separate per mode.
+  - **Calibration**: `quer_llm()` for binary synthetics + empirical cos sim.
+  - **Re-Ranker**: Optimized for top-20; mode-specific (e.g., no geometric for SEMANTIC).
+  - **Update Handler**: Incremental with dedup checks; locks for concurrency.
+- **Data Flow**: Images → Preprocess (OCR/resize/pHash) → Embed → Index/Search → Re-rank/Threshold → Output.
+
+### Tech Stack
+- **Languages/Frameworks**: Python 3.10+; Streamlit; PyTorch/Hugging Face; FAISS.
+- **Libraries**: paddleocr (OCR); imagehash (pHash); rank-bm25 (keyword index); filelock (concurrency).
+  - Embeddings: transformers (SigLIP), dinov2, insightface.
+  - Re-Rank: dreamsim, lightglue-py (faster geometric).
+  - Utils: Pillow, scikit-learn (metrics/gaps), numpy (diffs), logging, lru_cache (caching).
+- **Models**: SigLIP (SEMANTIC, 768-dim); DINOv2 (SIMILAR, 1024-dim); ArcFace (FACE, 512-dim).
+- **Modularity**: Config.yaml for weights/thresholds; LanceDB as future option (integrated vectors/metadata; swap if sync issues arise at scale, but adds dep complexity—not for MVP).
+
+### Data Structures
+- **Metadata DB (SQLite)**: `images` table: id (int), path (str), timestamp (datetime), has_faces (bool), ocr_text (str), p_hash (str), deleted (bool default False).
+- **Faces Table**: face_id (int), image_id (int), bbox (str JSON), embedding (blob), quality_score (float).
+- **Indexes**: FAISS files per mode (with PQ); store normalized vectors + IDs.
+- **Synthetics**: JSON from `quer_llm()`: {'mode': str, 'is_positive': bool, 'reason': str}.
+
+## 3. Detailed Workflow
+### Phase 1: Setup (Script: `setup.py`)
+1. **Scan Collection**: Walk folder; compute pHash (imagehash.phash); insert into SQLite (flag dupes if hash sim >95%).
+2. **Preprocess Each Image**:
+   - Resize/normalize (L2 norm vectors); handle EXIF orientation (Pillow).
+   - OCR: PaddleOCR (extract text if confidence >0.5); store in metadata.
+   - Dedup: If pHash matches existing, flag/link as dupe (skip full embed if exact).
+   - Face Detection: InsightFace (crops/aligns); store in faces table with quality (e.g., from detector confidence/size).
+3. **Generate Embeddings**:
+   - SEMANTIC: SigLIP(image); separate SigLIP(ocr_text) if text present.
+   - SIMILAR: DINOv2(image); query-time multi-crop (5-crop: center + 4 corners → average embeddings) via config.
+   - FACE: ArcFace per face (filter quality <0.5).
+   - Batch; GPU check.
+4. **Index Embeddings** (Updated): Build FAISS IndexIVFPQ (m=8, nbits=8 for 8-16x compression; dim % m ==0 verified for models). Sample 10k vectors → `index.train(sample)` → add all. Use for 100k+; fallback to IndexHNSWFlat for smaller scales if recall prioritized over compression.
+5. **Calibrate Thresholds** (Updated):
+   - Sample 100-200 pairs/mode (include hard negatives via `quer_llm()` prompt: "Generate similar-but-not pairs for [desc1, desc2] in mixed domains").
+   - Call `quer_llm()`: "For image1 desc [meme] and image2 [doc], output JSON: {'mode': 'semantic', 'is_positive': false, 'reason': 'Different concepts'}." (Binary only; retries/parsing).
+   - Embed pairs → compute empirical cos sim for positives → set base thresholds.
+   - Bootstrap human val: Sample 50-100 synthetics; manual label script/UI for sanity.
+   - Eval: mAP@K, MMR@K (diversity); log failure modes (hard negs).
+6. **Automated Eval** (Updated): Include latency tracking; stratified metrics by domain buckets (e.g., memes/docs/animals/medical via manual tags or heuristics), OCR presence, duplicates.
+
+### Phase 2: Runtime (Streamlit App: `app.py`)
+1. **User Input**: Upload/text; mode dropdown; search.
+2. **Input Validation**: File type/size; errors via st.error.
+3. **Preprocess Query** (Updated): Resize; OCR (PaddleOCR); pHash check for near-dupes (fast path: if Hamming dist <=8 to indexed, return those first as candidates).
+4. **Embed Query**: Mode-specific; separate text embed if hybrid.
+5. **Retrieve Candidates**: FAISS cosine top-100 (post-filter deleted via tombstones).
+6. **Re-Rank and Threshold** (Updated):
+   - Re-Rank: Top-20 only; DreamSim (perceptual for SEMANTIC/SIMILAR); LightGlue (geometric for SIMILAR/FACE only).
+   - Fusion (OCR/Text): Normalize BM25 (z-score via scikit-learn) or use RRF: `score = 1/(rank_img + 60) + 1/(rank_txt + 60) + 1/(rank_bm25 + 60)`. BM25 via SQLite FTS5 (tokenization: standard English; incremental updates on OCR text).
+   - Threshold: Base from calibration as primary; adaptive gap-based secondary (`gaps = np.diff(scores); valid_gaps = gaps[2:-10] if len(gaps)>12 else gaps; cutoff = np.argmax(valid_gaps) + 2 if valid_gaps else 10`; enforce min 3/max 20 results).
+   - Fallback: If no matches, suggest mode switch or return top-3 with warning.
+   - Caching: @lru_cache for query embeds/results.
+7. **Output**: Thumbnails/scores/explanations. Logging: Query logs (time, mode, failures).
+
+### Phase 3: Expansion (Script: `update.py`)
+- Periodic run (cron/hourly): Lock file (FileLock); scan new images; preprocess/embed (dedup via pHash); FAISS.add.
+- Deletions: Set deleted flag in SQLite; post-filter searches. If >5% tombstones, rebuild index (nightly/weekly).
+- Concurrency: Locks prevent simultaneous app/update access.
+
+### Robustness Features
+- **Error Handling**: Try-except (embeds/searches); LLM retries; fallback to CPU.
+- **Logging/Monitoring**: File logs (errors, latency, metrics); alert thresholds (e.g., high failures).
+- **Edge Cases**: Noisy inputs (Pillow denoise); multi-face: Weighted aggregate (`max(quality * sim)` per image).
+- **Security**: Upload validation.
+- **Testing**: Pytest units; integration with hard negs/diversity.
+
+## 4. Implementation Plan
+### Milestones
+1. **Week 1**: Setup + embedding (OCR fusion, pHash, PQ).
+2. **Week 2**: Indexing, calibration (hybrid/gap-based), eval (diversity/hard negs).
+3. **Week 3**: UI + runtime (re-rank optimizations, caching).
+4. **Week 4**: Update script (locks/tombstones), testing, human val bootstrap.
+
+### Dependencies
+- Add: pip install paddleocr imagehash rank-bm25 filelock lightglue-py.
+
+### Risks and Mitigations
+- **LLM Variance**: Binary-only + empirical sim; human sanity check.
+- **Memory/Latency**: PQ + top-20 re-rank; monitor logs.
+- **Dupes/Deletions**: pHash/tombstones prevent bloat/bugs.
