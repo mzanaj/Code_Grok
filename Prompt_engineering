@@ -1,0 +1,165 @@
+"""
+Synthetic Data Generation Pipeline
+====================================
+Reconstructs plausible context from a given phrase/fragment.
+Each API call randomizes temperature and output length for maximum diversity.
+"""
+
+import json
+import random
+import anthropic
+from pydantic import BaseModel, field_validator
+from typing import Literal
+from datetime import datetime
+
+# ── Pydantic Schema ────────────────────────────────────────────────────────────
+class SyntheticContext(BaseModel):
+phrase: str
+context: str
+length_type: Literal["sentence", "paragraph", "document"]
+temperature: float
+@field_validator("context")
+@classmethod
+def context_must_contain_phrase(cls, v, info):
+phrase = info.data.get("phrase", "")
+if phrase and phrase.lower() not in v.lower():
+raise ValueError(f"Context must contain the original phrase: '{phrase}'")
+return v
+
+# ── Prompt Templates ───────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """
+You are a synthetic data generation expert. Your task is to reconstruct a plausible,
+natural context that a given phrase or fragment was taken from.
+RULES:
+1. The original phrase MUST appear verbatim inside the reconstructed context.
+2. The context should feel authentic — like it was taken from a real conversation,
+message, article, or document. Do NOT describe the context; WRITE the context itself.
+3. Register: lean informal, but formal and mixed registers are valid.
+4. You will be told the desired length: sentence, paragraph, or document. Respect it.
+
+5. Return ONLY a valid JSON object. No preamble, no markdown, no explanation.
+OUTPUT FORMAT (strict JSON):
+{
+"phrase": "<the original phrase, copied exactly>",
+"context": "<the reconstructed context with the phrase naturally embedded>"
+}
+EXAMPLES:
+Input phrase: "I can't believe she said that"
+Length: paragraph
+{
+"phrase": "I can't believe she said that",
+"context": "So I was at lunch with Maya and Priya yesterday, just catching up, and somehow the topic of the promotion came up. Maya was going on about how she deserved it more than anyone on the team, and I was kind of just nodding along. Then out of nowhere she starts talking about Priya like she wasn't even sitting right there. I can't believe she said that — like, who does that? Priya just went quiet and started messing with her phone. It was so uncomfortable. I texted her after to check in and she left me on read."
+}
+---
+Input phrase: "the deadline got pushed again"
+Length: sentence
+{
+"phrase": "the deadline got pushed again",
+"context": "Just heard from the PM — the deadline got pushed again, so we've got until Friday now."
+}
+---
+Input phrase: "nobody told me about the meeting"
+Length: document
+{
+"phrase": "nobody told me about the meeting",
+"context": "Subject: Re: Re: Re: Q3 Planning Session\n\nHey all,\n\nJust circling back on this thread because I'm a little confused about where things stand. I showed up to the office Tuesday morning ready for our usual standup and the room was completely empty. I checked Slack and saw a flood of messages from the planning session that had apparently happened at 9am — nobody told me about the meeting, and I'm still not sure how I got left off the invite.\n\nI've gone through the notes that Sarah shared and I think I'm mostly caught up, but I did have a few questions about the resourcing decisions on the APAC rollout. Can we find 20 minutes this week to sync?\n\nThanks,\nDan"
+}
+""".strip()
+
+def build_user_prompt(phrase: str, length_type: str) -> str:
+length_instructions = {
+"sentence": "Write ONE or TWO sentences of context. Keep it tight.",
+"paragraph": "Write a full paragraph of context (4–8 sentences).",
+"document": "Write a longer document-style context: could be an email, text thread, article excerpt, or chat log (10–20 sentences)."
+}
+return (
+
+f'Input phrase: "{phrase}"\n'
+f'Length: {length_type}\n'
+f'{length_instructions[length_type]}\n\n'
+f'Return only the JSON object.'
+)
+
+# ── Core Generation Function ───────────────────────────────────────────────────
+def generate_context(
+phrase: str,
+client: anthropic.Anthropic,
+length_type: str | None = None,
+temperature: float | None = None,
+) -> SyntheticContext:
+"""
+Generate one synthetic context for a given phrase.
+Randomizes length_type and temperature if not provided.
+"""
+# Randomize if not passed in
+if length_type is None:
+length_type = random.choice(["sentence", "paragraph", "document"])
+if temperature is None:
+temperature = round(random.uniform(0.7, 1.0), 2)
+user_prompt = build_user_prompt(phrase, length_type)
+response = client.messages.create(
+model="claude-sonnet-4-20250514",
+max_tokens=1000,
+temperature=temperature,
+system=SYSTEM_PROMPT,
+messages=[
+{"role": "user", "content": user_prompt}
+]
+)
+raw = response.content[0].text.strip()
+# Strip markdown fences if present
+if raw.startswith("```"):
+raw = raw.split("```")[1]
+if raw.startswith("json"):
+raw = raw[4:]
+raw = raw.strip()
+parsed = json.loads(raw)
+
+# Inject metadata before Pydantic validation
+parsed["length_type"] = length_type
+parsed["temperature"] = temperature
+return SyntheticContext(**parsed)
+
+# ── Batch Generation ───────────────────────────────────────────────────────────
+def generate_dataset(
+phrases: list[str],
+variations_per_phrase: int = 25,
+output_file: str = "synthetic_dataset.jsonl",
+) -> list[SyntheticContext]:
+"""
+Generate multiple variations per phrase and save to a JSONL file.
+"""
+client = anthropic.Anthropic()
+results = []
+failed = 0
+print(f"Generating {variations_per_phrase} variations for {len(phrases)} phrase(s)...")
+print(f"Total API calls: {len(phrases) * variations_per_phrase}\n")
+with open(output_file, "w") as f:
+for phrase in phrases:
+print(f' Phrase: "{phrase}"')
+for i in range(variations_per_phrase):
+try:
+result = generate_context(phrase, client)
+results.append(result)
+f.write(result.model_dump_json() + "\n")
+print(f" [{i+1}/{variations_per_phrase}] ✓ ({result.length_type}, temp={result.temperature})")
+except Exception as e:
+failed += 1
+print(f" [{i+1}/{variations_per_phrase}] ✗ Error: {e}")
+print(f"\nDone. {len(results)} generated, {failed} failed.")
+print(f"Saved to: {output_file}")
+return results
+
+# ── Entry Point ────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+sample_phrases = [
+
+"I can't believe she said that",
+"the deadline got pushed again",
+"nobody told me about the meeting",
+]
+generate_dataset(
+phrases=sample_phrases,
+variations_per_phrase=25,
+output_file=f"synthetic_dataset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+)
